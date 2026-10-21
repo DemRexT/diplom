@@ -128,6 +128,7 @@ function render(data) {
   $('publish').textContent = data.published ? 'Снять с публикации' : 'Опубликовать для группы';
   $('summary').replaceChildren();
   renderSummary($('summary'), data.summary);
+  window.StudyLabs?.render($('summary'), data.labs);
   $('summary').append(node('h3', 'Главные мысли для повторения'));
   const list = node('ul');
   data.key_points.forEach(point => list.append(richNode('li', point)));

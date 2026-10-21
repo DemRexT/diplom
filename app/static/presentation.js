@@ -186,11 +186,37 @@
 
   function renderFormula(container, entry) {
     if (!window.katex) { container.textContent = entry.formula; return; }
-    window.katex.render(entry.formula, container, {
-      displayMode: entry.display, throwOnError: false, trust: false,
+    const options = {
+      displayMode: entry.display, throwOnError: true, trust: false,
       strict: 'ignore', maxExpand: 500, maxSize: 10, output: 'htmlAndMathml',
-      errorColor: '#9b4939',
-    });
+    };
+    try {
+      window.katex.render(entry.formula, container, options);
+    } catch (error) {
+      // A prime is already a superscript in TeX. Group the primed symbol before
+      // a lower/upper index pair; this preserves the symbol and both indices.
+      const grouped = entry.formula.replace(/(\\[A-Za-z]+|[A-Za-z])(['′]+)(?=_)/g,
+        (_, base, primes) => '{' + base + primes.replace(/′/g, "'") + '}');
+      if (grouped !== entry.formula) {
+        try {
+          window.katex.render(grouped, container, options);
+          container.title = 'Исправлена группировка штриха при отображении; исходная запись сохранена.';
+          return;
+        } catch (_) { /* Keep the original visible on demand, never guess its meaning. */ }
+      }
+      container.replaceChildren();
+      container.classList.add('study-math-error', 'no-math');
+      container.append(element('span', 'Формула содержит ошибку записи. '));
+      const toggle = element('button', 'Показать исходную формулу');
+      toggle.type = 'button'; toggle.setAttribute('aria-expanded', 'false');
+      const original = element('code', entry.formula); original.hidden = true;
+      toggle.onclick = () => {
+        original.hidden = !original.hidden;
+        toggle.setAttribute('aria-expanded', String(!original.hidden));
+        toggle.textContent = original.hidden ? 'Показать исходную формулу' : 'Скрыть исходную формулу';
+      };
+      container.append(toggle, original);
+    }
   }
 
   function parser() {
