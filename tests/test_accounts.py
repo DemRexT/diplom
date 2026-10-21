@@ -50,12 +50,17 @@ def test_complete_learning_workflow(database, monkeypatch):
     assert r.status_code == 200
     mid = r.json()['id']
     path = f'/api/materials/{mid}'
+    page = TestClient(app).get(f'/materials/{mid}')
+    assert page.status_code == 200
+    assert RESULT['summary'] not in page.text
+    assert TestClient(app).get(path).status_code == 401
     assert learner.get('/api/materials').json() == []
     assert learner.get(path).status_code == 404
     assert learner.post('/api/material', files={'file': ('a.txt', TEXT.encode())}).status_code == 403
     assert learner.patch(path, json={'published': True}).status_code == 403
     assert teacher.patch(path, json={'published': True}).status_code == 200
     assert len(learner.get('/api/materials').json()) == 1
+    assert learner.get(f'/materials/{mid}').status_code == 200
     content = learner.get(path).json()
     assert 'answer' not in content['quiz'][0]
     assert 'explanation' not in content['quiz'][0]

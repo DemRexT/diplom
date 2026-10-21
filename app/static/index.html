@@ -4,7 +4,7 @@
 <body>
 <header><a class="brand" href="/">✳ Суть</a><span>Твой учебный помощник</span><span class="badge" id="account-label">Личный кабинет</span><button id="logout" hidden>Выйти</button></header>
 <main>
-<section class="hero"><div class="eyebrow">МЕНЬШЕ ШУМА. БОЛЬШЕ СМЫСЛА.</div><h1>От методички —<br>к пониманию.</h1><p>Выдели главное, разбери понятия и проверь себя.<br>Загрузи учебный материал — начнём с сути.</p></section>
+<section class="hero" id="hero"><div class="eyebrow">МЕНЬШЕ ШУМА. БОЛЬШЕ СМЫСЛА.</div><h1>От методички —<br>к пониманию.</h1><p>Выдели главное, разбери понятия и проверь себя.<br>Загрузи учебный материал — начнём с сути.</p></section>
 <p id="notice" role="status" aria-live="polite"></p>
 <section id="auth" class="panel">
 <h2>Вход в учебный кабинет</h2><p>Студенты регистрируются по коду группы от преподавателя.</p>
@@ -19,9 +19,9 @@
 <label>Код группы<input name="invite_code" required maxlength="100"></label><button>Создать аккаунт студента</button></form></details>
 </section>
 <section id="workspace" hidden>
-<p id="group-label"></p><section class="panel"><h2>Библиотека материалов</h2><p id="library-empty" hidden>Пока нет доступных материалов.</p><div id="library"></div></section>
+<a id="back-library" href="/" hidden>← К библиотеке материалов</a><p id="group-label"></p><section class="panel" id="library-panel"><h2>Библиотека материалов</h2><p id="library-empty" hidden>Пока нет доступных материалов.</p><div id="library"></div></section>
 <section class="upload" id="teacher-upload" hidden><div class="file-icon">↥</div><h2>С чего начнём?</h2><p>Выбери методичку, лекцию или учебную главу</p><form id="upload"><label class="picker">Выбрать материал<input id="file" type="file" accept=".pdf,.docx,.txt" required></label><span id="filename">PDF, DOCX или TXT · до 10 МБ</span><p class="privacy">Текст будет отправлен провайдеру нейросети для обработки.<br>Не загружай персональные данные и конфиденциальные документы.</p><button id="submit" type="submit" disabled>Разобрать материал ↗</button></form><p id="status" role="status" aria-live="polite"></p></section>
-<div class="steps"><article><b>01 / Конспект</b><p>Ключевые идеи без лишних слов</p></article><article><b>02 / Карточки</b><p>Понятия, которые стоит запомнить</p></article><article><b>03 / Практика</b><p>Тест с объяснением ответов</p></article></div>
-<section id="result" hidden><div id="teacher-actions" hidden><button id="publish"></button><button id="show-stats">Статистика</button></div><section id="statistics" class="panel" hidden></section><div class="eyebrow">ТВОЙ МАТЕРИАЛ</div><h2 id="title"></h2><nav aria-label="Разделы материала"><button data-tab="summary" class="active">Конспект</button><button data-tab="cards">Карточки</button><button data-tab="quiz">Проверить себя</button></nav><div id="summary" class="panel"></div><div id="cards" class="panel" hidden></div><div id="quiz" class="panel" hidden></div></section>
+<div class="steps" id="steps"><article><b>01 / Конспект</b><p>Ключевые идеи без лишних слов</p></article><article><b>02 / Карточки</b><p>Понятия, которые стоит запомнить</p></article><article><b>03 / Практика</b><p>Тест с объяснением ответов</p></article></div>
+<section id="result" hidden><label class="material-link">Ссылка на материал<input id="material-url" readonly aria-label="Ссылка на материал"></label><div id="teacher-actions" hidden><button id="publish"></button><button id="show-stats">Статистика</button></div><section id="statistics" class="panel" hidden></section><div class="eyebrow">ТВОЙ МАТЕРИАЛ</div><h2 id="title"></h2><nav aria-label="Разделы материала"><button data-tab="summary" class="active">Конспект</button><button data-tab="cards">Карточки</button><button data-tab="quiz">Проверить себя</button></nav><div id="summary" class="panel"></div><div id="cards" class="panel" hidden></div><div id="quiz" class="panel" hidden></div></section>
 </section></main><footer>Суть / Учись осмысленно <span>Ответы ИИ могут содержать ошибки. Сверяйся с источником.</span></footer>
 <script src="/static/app.js"></script></body></html>

@@ -8,6 +8,20 @@ const node = (tag, text, cls) => {
 let user = null;
 let selected = null;
 let generation = 0;
+const materialMatch = window.location.pathname.match(/^\/materials\/(\d+)\/?$/);
+const materialId = materialMatch ? materialMatch[1] : null;
+
+async function openCurrentMaterial() {
+  if (!materialId || !user) return;
+  const version = generation;
+  const data = await api(`/api/materials/${materialId}`);
+  if (version !== generation) return;
+  render(data);
+  document.title = `${data.title} · Суть`;
+  if (user.role === 'student') {
+    await api(`/api/materials/${materialId}/view`, {method: 'POST'});
+  }
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -32,7 +46,11 @@ function setUser(value) {
   $('auth').hidden = !!user;
   $('workspace').hidden = !user;
   $('logout').hidden = !user;
-  $('teacher-upload').hidden = user?.role !== 'teacher';
+  $('teacher-upload').hidden = user?.role !== 'teacher' || !!materialId;
+  $('hero').hidden = !!materialId;
+  $('steps').hidden = !!materialId;
+  $('library-panel').hidden = !!materialId;
+  $('back-library').hidden = !materialId;
   $('result').hidden = true;
   $('library').replaceChildren();
   $('statistics').replaceChildren();
@@ -46,18 +64,8 @@ async function refreshLibrary() {
   $('library').replaceChildren();
   $('library-empty').hidden = materials.length !== 0;
   for (const material of materials) {
-    const button = node('button', material.title + (user.role === 'teacher' ? (material.published ? ' · Опубликован' : ' · Черновик') : ''), 'library-item');
-    button.onclick = async () => {
-      try {
-        const data = await api(`/api/materials/${material.id}`);
-        if (version !== generation) return;
-        render(data);
-        if (user.role === 'student') {
-          await api(`/api/materials/${material.id}/view`, {method: 'POST'});
-        }
-        notice('');
-      } catch (error) { notice(error.message); }
-    };
+    const button = node('a', material.title + (user.role === 'teacher' ? (material.published ? ' · Опубликован' : ' · Черновик') : ''), 'library-item');
+    button.href = `/materials/${material.id}`;
     $('library').append(button);
   }
 }
@@ -71,7 +79,8 @@ for (const [formId, endpoint] of [['login-form', 'login'], ['register-form', 're
       setUser(await api('/api/auth/' + endpoint, json('POST', data)));
       event.target.reset();
       notice('');
-      await refreshLibrary();
+      if (materialId) await openCurrentMaterial();
+      else await refreshLibrary();
     } catch (error) { notice(error.message); }
     finally { button.disabled = false; }
   };
@@ -91,6 +100,7 @@ document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () =>
 });
 function render(data) {
   selected = data;
+  $('material-url').value = new URL(`/materials/${data.id}`, window.location.origin).href;
   $('title').textContent = data.title;
   $('statistics').hidden = true;
   $('teacher-actions').hidden = user.role !== 'teacher';
@@ -203,12 +213,15 @@ $('upload').onsubmit = async event => {
   try {
     const data = await api('/api/material', {method: 'POST', body: form});
     if (version !== generation) return;
-    render(data); await refreshLibrary();
-    $('status').textContent = 'Черновик сохранён. Проверь содержание и опубликуй для группы.';
+    window.location.assign(`/materials/${data.id}`);
   } catch (error) { $('status').textContent = error.message; }
   finally { $('submit').disabled = false; }
 };
 (async () => {
-  try { setUser(await api('/api/auth/me')); await refreshLibrary(); }
+  try {
+    setUser(await api('/api/auth/me'));
+    if (materialId) await openCurrentMaterial();
+    else await refreshLibrary();
+  }
   catch (error) { if (user) notice(error.message); }
 })();

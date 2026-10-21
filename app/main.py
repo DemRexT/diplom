@@ -131,6 +131,7 @@ explanation: объяснение по тексту). Проверяй пони�
 
 
 @app.get('/')
+@app.get('/materials/{material_id:int}')
 async def index():
     return FileResponse(ROOT / 'static' / 'index.html')
 
