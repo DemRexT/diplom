@@ -1,11 +1,24 @@
 import io
+import pytest
+from app.auth import teacher
+from app.store import User, Group
 
 from docx import Document
 from fastapi.testclient import TestClient
 
 from app import main
 
-client = TestClient(main.app)
+@pytest.fixture
+def client(database):
+    with database() as session:
+        group = Group(name='Test', invite='test-invite')
+        session.add(group)
+        session.flush()
+        user = User(username='teacher', name='Teacher', role='teacher', password='unused', group_id=group.id)
+        session.add(user)
+        session.commit()
+    main.app.dependency_overrides[teacher] = lambda: user
+    return TestClient(main.app, headers={'X-Study-Request': '1'})
 TEXT = 'Учебный материал о базах данных и нормализации. ' * 10
 RESULT = {'title': 'Базы данных', 'summary': 'Нормализация уменьшает избыточность.',
           'key_points': ['Данные организованы в таблицы.'],
@@ -14,7 +27,7 @@ RESULT = {'title': 'Базы данных', 'summary': 'Нормализация
                     'answer': 0, 'explanation': 'Таблица состоит из строк.'}]}
 
 
-def test_page_and_health():
+def test_page_and_health(client):
     assert client.get('/').status_code == 200
     assert client.get('/health').json()['status'] == 'ok'
 
@@ -28,22 +41,24 @@ def test_txt_and_docx():
     assert main.extract_text('lecture.docx', buf.getvalue()) == TEXT.strip()
 
 
-def test_upload_calls_generator(monkeypatch):
+def test_upload_calls_generator(monkeypatch, client):
     async def fake(text):
         assert text == TEXT.strip()
         return main.StudyMaterial.model_validate(RESULT)
     monkeypatch.setattr(main, 'generate', fake)
     r = client.post('/api/material', files={'file': ('lecture.txt', TEXT.encode())})
     assert r.status_code == 200
-    assert r.json() == RESULT
+    assert {k: r.json()[k] for k in RESULT} == RESULT
+    assert r.json()['published'] is False
+    assert r.json()['id'] > 0
 
 
-def test_missing_key(monkeypatch):
+def test_missing_key(monkeypatch, client):
     monkeypatch.delenv('YANDEX_API_KEY', raising=False)
     assert client.post('/api/material', files={'file': ('a.txt', TEXT.encode())}).status_code == 503
 
 
-def test_invalid_files():
+def test_invalid_files(client):
     for name, data, expected in [('a.exe', b'x', 415), ('a.pdf', b'bad pdf', 422),
                                   ('a.txt', b'tiny', 422), ('a.txt', b'x' * (10 * 1024 * 1024 + 1), 413)]:
         assert client.post('/api/material', files={'file': (name, data)}).status_code == expected

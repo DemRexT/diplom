@@ -2,10 +2,18 @@ import io
 import json
 import os
 from pathlib import Path
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+from .store import db, init_db, Material, User, View, Attempt
+from .auth import router as auth_router, current_user, teacher
 
 import httpx
 from docx import Document
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, Depends, Request
+from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
@@ -14,7 +22,26 @@ from pypdf import PdfReader
 ROOT = Path(__file__).parent
 MAX_BYTES = 10 * 1024 * 1024
 MAX_TEXT = 45000
-app = FastAPI(title="Суть — учебный помощник")
+@asynccontextmanager
+async def lifespan(app):
+    init_db()
+    yield
+
+app = FastAPI(title="Суть — учебный помощник", lifespan=lifespan)
+app.include_router(auth_router)
+
+@app.middleware('http')
+async def csrf_guard(request: Request, call_next):
+    # All browser mutations require a non-simple custom header. No CORS is enabled.
+    if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and request.headers.get('X-Study-Request') != '1':
+        return JSONResponse({'detail': 'Запрос отклонён: отсутствует защитный заголовок.'}, status_code=403)
+    response = await call_next(request)
+    if request.url.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    return response
+
 app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
 
 
@@ -113,8 +140,8 @@ async def health():
     return {'status': 'ok', 'ai_configured': bool(os.getenv('YANDEX_API_KEY') and os.getenv('YANDEX_FOLDER_ID'))}
 
 
-@app.post('/api/material', response_model=StudyMaterial)
-async def material(file: UploadFile = File(...)):
+@app.post('/api/material')
+async def material(file: UploadFile = File(...), user: User = Depends(teacher), session: Session = Depends(db)):
     try:
         data = await file.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES:
@@ -122,4 +149,120 @@ async def material(file: UploadFile = File(...)):
         text = extract_text(file.filename or '', data)
     finally:
         await file.close()
-    return await generate(text)
+    generated = await generate(text)
+    record = Material(teacher_id=user.id, group_id=user.group_id, title=generated.title,
+                      content=generated.model_dump_json(), published=False)
+    session.add(record)
+    session.commit()
+    return material_payload(record, user)
+
+
+
+def timestamp():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def visible_material(material_id, user, session):
+    record = session.get(Material, material_id)
+    if not record or (user.role == 'teacher' and record.teacher_id != user.id) or (
+        user.role == 'student' and (not record.published or record.group_id != user.group_id)
+    ):
+        raise HTTPException(404, 'Материал не найден.')
+    return record
+
+
+def material_payload(record, user):
+    content = json.loads(record.content)
+    if user.role == 'student':
+        content['quiz'] = [{'question': q['question'], 'options': q['options']} for q in content['quiz']]
+    return dict(id=record.id, published=record.published, **content)
+
+
+@app.get('/api/materials')
+def list_materials(user: User = Depends(current_user), session: Session = Depends(db)):
+    query = select(Material)
+    if user.role == 'teacher':
+        query = query.where(Material.teacher_id == user.id)
+    else:
+        query = query.where(Material.group_id == user.group_id, Material.published.is_(True))
+    return [dict(id=m.id, title=m.title, published=m.published) for m in session.scalars(query.order_by(Material.id.desc()))]
+
+
+@app.get('/api/materials/{material_id}')
+def get_material(material_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
+    return material_payload(visible_material(material_id, user, session), user)
+
+
+@app.post('/api/materials/{material_id}/view')
+def record_view(material_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
+    visible_material(material_id, user, session)
+    if user.role == 'student':
+        now = timestamp()
+        statement = update(View).where(View.material_id == material_id, View.user_id == user.id).values(last_at=now, count=View.count + 1)
+        updated = session.execute(statement)
+        if updated.rowcount == 0:
+            session.add(View(material_id=material_id, user_id=user.id, first_at=now, last_at=now, count=1))
+        try:
+            session.commit()
+        except IntegrityError:
+            # Two tabs can record the first opening at once; preserve both views.
+            session.rollback()
+            session.execute(statement)
+            session.commit()
+    return {'ok': True}
+
+
+class Publication(BaseModel):
+    published: bool
+
+
+@app.patch('/api/materials/{material_id}')
+def publish(material_id: int, data: Publication, user: User = Depends(teacher), session: Session = Depends(db)):
+    record = visible_material(material_id, user, session)
+    record.published = data.published
+    session.commit()
+    return {'id': record.id, 'published': record.published}
+
+
+class Submission(BaseModel):
+    answers: list[int] = Field(min_length=1, max_length=10)
+
+
+@app.post('/api/materials/{material_id}/attempts')
+def submit_quiz(material_id: int, data: Submission, user: User = Depends(current_user), session: Session = Depends(db)):
+    record = visible_material(material_id, user, session)
+    if user.role != 'student':
+        raise HTTPException(403, 'Тест с сохранением результата доступен студентам.')
+    quiz = json.loads(record.content)['quiz']
+    if len(data.answers) != len(quiz) or any(a < 0 or a > 3 for a in data.answers):
+        raise HTTPException(422, 'Ответьте на каждый вопрос, выбрав один вариант.')
+    score = sum(a == q['answer'] for a, q in zip(data.answers, quiz))
+    session.add(Attempt(material_id=record.id, user_id=user.id, score=score, total=len(quiz), created_at=timestamp()))
+    session.commit()
+    return {'score': score, 'total': len(quiz), 'feedback': [
+        {'answer': q['answer'], 'explanation': q['explanation']} for q in quiz
+    ]}
+
+
+@app.get('/api/materials/{material_id}/stats')
+def stats(material_id: int, user: User = Depends(teacher), session: Session = Depends(db)):
+    record = visible_material(material_id, user, session)
+    students = session.scalars(select(User).where(User.group_id == record.group_id, User.role == 'student').order_by(User.name)).all()
+    views = {v.user_id: v for v in session.scalars(select(View).where(View.material_id == record.id))}
+    attempts = session.scalars(select(Attempt).where(Attempt.material_id == record.id).order_by(Attempt.id)).all()
+    by_user = {}
+    for attempt in attempts:
+        by_user.setdefault(attempt.user_id, []).append(attempt)
+    result = []
+    for student in students:
+        view = views.get(student.id)
+        history = by_user.get(student.id, [])
+        last = history[-1] if history else None
+        result.append({'name': student.name, 'username': student.username,
+                       'first_view': view.first_at if view else None,
+                       'last_view': view.last_at if view else None,
+                       'views': view.count if view else 0,
+                       'attempts': len(history),
+                       'last_score': last.score if last else None,
+                       'total': last.total if last else None})
+    return result

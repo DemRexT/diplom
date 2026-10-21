@@ -2,11 +2,26 @@
 <html lang="ru">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Суть · Учись осмысленно</title><link rel="stylesheet" href="/static/style.css"></head>
 <body>
-<header><a class="brand" href="/">✳ Суть</a><span>Твой учебный помощник</span><span class="badge">Дипломный проект</span></header>
+<header><a class="brand" href="/">✳ Суть</a><span>Твой учебный помощник</span><span class="badge" id="account-label">Личный кабинет</span><button id="logout" hidden>Выйти</button></header>
 <main>
 <section class="hero"><div class="eyebrow">МЕНЬШЕ ШУМА. БОЛЬШЕ СМЫСЛА.</div><h1>От методички —<br>к пониманию.</h1><p>Выдели главное, разбери понятия и проверь себя.<br>Загрузи учебный материал — начнём с сути.</p></section>
-<section class="upload"><div class="file-icon">↥</div><h2>С чего начнём?</h2><p>Выбери методичку, лекцию или учебную главу</p><form id="upload"><label class="picker">Выбрать материал<input id="file" type="file" accept=".pdf,.docx,.txt" required></label><span id="filename">PDF, DOCX или TXT · до 10 МБ</span><p class="privacy">Текст будет отправлен провайдеру нейросети для обработки.<br>Не загружай персональные данные и конфиденциальные документы.</p><button id="submit" type="submit" disabled>Разобрать материал ↗</button></form><p id="status" role="status" aria-live="polite"></p></section>
+<p id="notice" role="status" aria-live="polite"></p>
+<section id="auth" class="panel">
+<h2>Вход в учебный кабинет</h2><p>Студенты регистрируются по коду группы от преподавателя.</p>
+<form id="login-form" class="auth-form">
+<label>Логин<input name="username" autocomplete="username" required minlength="3" maxlength="100" pattern="[A-Za-z0-9_.-]+"></label>
+<label>Пароль<input name="password" type="password" autocomplete="current-password" required minlength="10" maxlength="128"></label>
+<button>Войти</button></form>
+<details><summary>Регистрация студента</summary><form id="register-form" class="auth-form">
+<label>Имя и фамилия<input name="name" autocomplete="name" required maxlength="150"></label>
+<label>Логин (латинские буквы, цифры, _ . -)<input name="username" autocomplete="username" required minlength="3" maxlength="100" pattern="[A-Za-z0-9_.-]+"></label>
+<label>Пароль (от 10 символов)<input name="password" type="password" autocomplete="new-password" required minlength="10" maxlength="128"></label>
+<label>Код группы<input name="invite_code" required maxlength="100"></label><button>Создать аккаунт студента</button></form></details>
+</section>
+<section id="workspace" hidden>
+<p id="group-label"></p><section class="panel"><h2>Библиотека материалов</h2><p id="library-empty" hidden>Пока нет доступных материалов.</p><div id="library"></div></section>
+<section class="upload" id="teacher-upload" hidden><div class="file-icon">↥</div><h2>С чего начнём?</h2><p>Выбери методичку, лекцию или учебную главу</p><form id="upload"><label class="picker">Выбрать материал<input id="file" type="file" accept=".pdf,.docx,.txt" required></label><span id="filename">PDF, DOCX или TXT · до 10 МБ</span><p class="privacy">Текст будет отправлен провайдеру нейросети для обработки.<br>Не загружай персональные данные и конфиденциальные документы.</p><button id="submit" type="submit" disabled>Разобрать материал ↗</button></form><p id="status" role="status" aria-live="polite"></p></section>
 <div class="steps"><article><b>01 / Конспект</b><p>Ключевые идеи без лишних слов</p></article><article><b>02 / Карточки</b><p>Понятия, которые стоит запомнить</p></article><article><b>03 / Практика</b><p>Тест с объяснением ответов</p></article></div>
-<section id="result" hidden><div class="eyebrow">ТВОЙ МАТЕРИАЛ</div><h2 id="title"></h2><nav aria-label="Разделы материала"><button data-tab="summary" class="active">Конспект</button><button data-tab="cards">Карточки</button><button data-tab="quiz">Проверить себя</button></nav><div id="summary" class="panel"></div><div id="cards" class="panel" hidden></div><div id="quiz" class="panel" hidden></div></section>
-</main><footer>Суть / Учись осмысленно <span>Ответы ИИ могут содержать ошибки. Сверяйся с источником.</span></footer>
+<section id="result" hidden><div id="teacher-actions" hidden><button id="publish"></button><button id="show-stats">Статистика</button></div><section id="statistics" class="panel" hidden></section><div class="eyebrow">ТВОЙ МАТЕРИАЛ</div><h2 id="title"></h2><nav aria-label="Разделы материала"><button data-tab="summary" class="active">Конспект</button><button data-tab="cards">Карточки</button><button data-tab="quiz">Проверить себя</button></nav><div id="summary" class="panel"></div><div id="cards" class="panel" hidden></div><div id="quiz" class="panel" hidden></div></section>
+</section></main><footer>Суть / Учись осмысленно <span>Ответы ИИ могут содержать ошибки. Сверяйся с источником.</span></footer>
 <script src="/static/app.js"></script></body></html>
