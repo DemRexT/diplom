@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Суть · Учись осмысленно</title><link rel="stylesheet" href="/static/style.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Суть · Учись осмысленно</title><link rel="stylesheet" href="/static/vendor/katex/katex.min.css"><link rel="stylesheet" href="/static/style.css"></head>
 <body>
 <header><a class="brand" href="/">✳ Суть</a><span>Твой учебный помощник</span><span class="badge" id="account-label">Личный кабинет</span><button id="logout" hidden>Выйти</button></header>
 <main>
@@ -33,4 +33,9 @@
 <div class="steps" id="steps"><article><b>01 / Конспект</b><p>Понятные объяснения без лишних слов</p></article><article><b>02 / Карточки</b><p>Соединяй понятия и объяснения</p></article><article><b>03 / Практика</b><p>Тест с объяснением ответов</p></article></div>
 <section id="result" hidden><label class="material-link">Ссылка на материал<input id="material-url" readonly aria-label="Ссылка на материал"></label><div id="teacher-actions" hidden><button id="publish"></button><button id="show-stats">Статистика</button></div><section id="statistics" class="panel" hidden></section><div class="eyebrow">ТВОЙ МАТЕРИАЛ</div><h2 id="title"></h2><p id="material-author"></p><nav aria-label="Разделы материала"><button data-tab="summary" class="active">Конспект</button><button data-tab="cards">Карточки</button><button data-tab="quiz">Проверить себя</button></nav><div id="summary" class="panel"></div><div id="cards" class="panel" hidden></div><div id="quiz" class="panel" hidden></div></section>
 </section></main><footer>Суть / Учись осмысленно <span>Ответы ИИ могут содержать ошибки. Сверяйся с источником.</span></footer>
-<script src="/static/app.js"></script></body></html>
+<script defer src="/static/vendor/katex/katex.min.js"></script>
+<script defer src="/static/vendor/katex/contrib/auto-render.min.js"></script>
+<script defer src="/static/vendor/mermaid/mermaid.min.js"></script>
+<script defer src="/static/vendor/dompurify/purify.min.js"></script>
+<script defer src="/static/presentation.js"></script>
+<script defer src="/static/app.js"></script></body></html>

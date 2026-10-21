@@ -1,0 +1,3 @@
+# Keep upstream minified bundles byte-for-byte; review versions in vendor/README.md.
+app/static/vendor/** linguist-vendored
+app/static/vendor/**/*.min.js -diff

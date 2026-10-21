@@ -116,6 +116,7 @@ $('file').onchange = () => {
 document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => {
   document.querySelectorAll('[data-tab]').forEach(other => other.classList.toggle('active', other === button));
   ['summary', 'cards', 'quiz'].forEach(id => $(id).hidden = id !== button.dataset.tab);
+  window.StudyPresentation?.enhance($(button.dataset.tab));
 });
 function render(data) {
   selected = data;
@@ -134,6 +135,7 @@ function render(data) {
   renderCardActivities(data.cards);
   renderQuiz(data);
   $('result').hidden = false;
+  typesetMath($('result'));
   document.querySelector('[data-tab="summary"]').click();
   $('result').scrollIntoView({behavior: 'smooth'});
 }
@@ -175,6 +177,7 @@ function renderQuiz(data) {
         sections[index].disabled = true;
         sections[index].append(node('p', `Правильный ответ: ${data.quiz[index].options[item.answer]}\n${item.explanation}`, 'feedback'));
       });
+      typesetMath($('quiz'));
     } catch (error) { feedback.textContent = error.message; submit.disabled = false; }
   };
   $('quiz').append(form);
@@ -337,6 +340,7 @@ $('assign-teacher').onsubmit = async event => {
 
 
 function renderSummary(container, text) {
+  if (window.StudyPresentation) { window.StudyPresentation.renderSummary(container, text); return; }
   let paragraph = [];
   const flush = () => {
     if (paragraph.length) container.append(node('p', paragraph.join('\n'), 'summary-text'));
@@ -455,6 +459,7 @@ function renderMatchingGame(root, cards) {
       termButtons.get(term).textContent = 'Не совпало: ' + cards[term].term;
       explanationButtons.get(explanation).textContent = 'Не совпало: ' + cards[explanation].explanation;
     }
+    typesetMath(root);
     if (event.detail === 0 && term === null && explanation === null && !mismatch) {
       const next = [...termButtons.values()].find(button => !button.disabled);
       (next || restart).focus();
@@ -470,6 +475,7 @@ function renderMatchingGame(root, cards) {
   board.append(termColumn, explanationColumn);
   root.append(score, progress, board, feedback, restart);
   paint();
+  typesetMath(root);
 }
 
 function renderCardReview(root, cards) {
@@ -488,6 +494,7 @@ function renderCardReview(root, cards) {
     flip.replaceChildren(caption, body);
     flip.setAttribute('aria-pressed', String(flipped));
     flip.classList.toggle('is-flipped', flipped);
+    typesetMath(flip);
     previous.disabled = index === 0; next.disabled = index === deck.length - 1;
   }
   flip.onclick = () => { flipped = !flipped; update(); };
@@ -496,4 +503,9 @@ function renderCardReview(root, cards) {
   mix.onclick = () => { deck = shuffled(deck); index = 0; flipped = false; update(); };
   controls.append(previous, next, mix); root.append(counter, hint, flip, controls);
   update();
+}
+
+
+function typesetMath(root) {
+  window.StudyPresentation?.math(root);
 }
