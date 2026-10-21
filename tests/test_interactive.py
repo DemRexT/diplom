@@ -96,7 +96,7 @@ def test_labs_survive_generation_storage_and_student_loading(database, monkeypat
         assert session.get(Material, material_id).content == original
 
 
-def test_invalid_lab_is_repaired_without_replacing_summary(database, monkeypatch):
+def test_invalid_optional_lab_is_skipped_without_replacing_summary(database, monkeypatch):
     accounts(database)
     teacher = login('teacher')
     bad = copy.deepcopy(LAB)
@@ -111,6 +111,5 @@ def test_invalid_lab_is_repaired_without_replacing_summary(database, monkeypatch
     response = teacher.post('/api/material', data={'group_id': '1'}, files={'file': ('lecture.txt', ('Свёртка тензора — сумма диагональных компонент. ' * 20).encode())})
     assert response.status_code == 200
     assert response.json()['summary'] == RESULT['summary']
-    assert response.json()['labs'][0]['outputs'][0]['expression'] == 'a11+a22'
-    assert len(requests) == 2
-    assert json.loads(requests[1]['messages'][1]['text'])['validation_errors'][0]['loc'] == ['labs', 0]
+    assert response.json()['labs'] == []
+    assert len(requests) == 1

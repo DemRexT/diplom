@@ -43,7 +43,7 @@ def test_every_original_fragment_gets_activities_not_just_compressed_notes(monke
     assert len(main.StudyMaterial.model_validate(result.model_dump()).labs) > 3
 
 
-def test_activity_repair_repeats_only_invalid_fragment(monkeypatch):
+def test_invalid_activity_is_skipped_without_retry(monkeypatch):
     monkeypatch.setattr(activities, 'ACTIVITY_CHARS', 100)
     source = 'Учебная формула: сумма компонент. ' * 10
     inputs = []
@@ -59,15 +59,13 @@ def test_activity_repair_repeats_only_invalid_fragment(monkeypatch):
     mock_yandex(monkeypatch, lambda request: reply(json.dumps(RESULT)), handler)
     result = asyncio.run(main.generate(source))
     pieces = activities.split_text(source, 100)
-    assert inputs[0] == pieces[0] and inputs[1] == pieces[1]
-    assert json.loads(inputs[2])['source'] == pieces[1]
-    assert inputs[3:] == pieces[2:]
+    assert inputs == pieces
     # Identical activities are not duplicated across fragments.
     assert len(result.labs) == 1
 
 
-@pytest.mark.parametrize('error,status', [('invalid', 502), ('quota', 503), ('timeout', 504)])
-def test_activity_failure_never_saves_partial_material(database, monkeypatch, error, status):
+@pytest.mark.parametrize('error', ['invalid', 'quota', 'timeout', 'json'])
+def test_activity_failure_preserves_ready_material(database, monkeypatch, error):
     accounts(database)
     teacher = login('teacher')
     attempts = []
@@ -75,13 +73,16 @@ def test_activity_failure_never_saves_partial_material(database, monkeypatch, er
         attempts.append(request)
         if error == 'quota': return httpx.Response(429, json={'error': {'message': 'quota'}})
         if error == 'timeout': raise httpx.ReadTimeout('timeout', request=request)
+        if error == 'json': return reply('invalid JSON')
         return reply(json.dumps({'labs': [{'invalid': True}], 'challenges': []}))
     mock_yandex(monkeypatch, lambda request: reply(json.dumps(RESULT)), handler)
     response = teacher.post('/api/material', data={'group_id': '1'}, files={'file': ('lecture.txt', ('Учебная формула и её применение. ' * 10).encode())})
-    assert response.status_code == status
-    assert len(attempts) == (2 if error == 'invalid' else 1)
+    assert response.status_code == 200
+    assert response.json()['summary'] == RESULT['summary']
+    assert response.json()['labs'] == []
+    assert len(attempts) == 1
     with database() as session:
-        assert session.scalars(select(Material)).all() == []
+        assert len(session.scalars(select(Material)).all()) == 1
 
 
 @pytest.mark.parametrize('kind,answer', [('choice', [0, 1]), ('choice', [9]), ('order', [0, 0, 2]), ('order', [0, 1])])
@@ -99,3 +100,13 @@ def test_visualization_component_counts(mode, count, valid):
         assert InteractiveLab.model_validate(lab).visualization == mode
     else:
         with pytest.raises(ValidationError): InteractiveLab.model_validate(lab)
+
+
+def test_mixed_good_and_bad_activities_keep_valid_ones(monkeypatch):
+    bad = copy.deepcopy(LAB)
+    bad['parameters'] = []
+    mock_yandex(monkeypatch, lambda request: reply(json.dumps(RESULT)),
+                lambda request: reply(json.dumps({'labs': [bad, LAB], 'challenges': [CHALLENGE, {'bad': True}]})))
+    result = asyncio.run(main.generate('Учебный текст. ' * 20))
+    assert len(result.labs) == len(result.challenges) == 1
+    assert result.labs[0].title == LAB['title']

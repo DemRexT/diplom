@@ -1,4 +1,6 @@
 import io
+import asyncio
+from contextlib import suppress
 import json
 import os
 from pathlib import Path
@@ -15,7 +17,7 @@ import httpx
 from docx import Document
 from fastapi import FastAPI, File, HTTPException, UploadFile, Depends, Request, Form
 from fastapi.responses import JSONResponse
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, ConfigDict, StrictInt
 from pypdf import PdfReader
@@ -103,6 +105,18 @@ async def validated_material(client, system, prepared, *, key, folder, summary=N
                 candidate = dict(candidate)
                 if summary is not None:
                     candidate['summary'] = summary
+                # Optional activities must never invalidate a usable lesson, including
+                # activities accidentally returned during the metadata request.
+                for field, model in [('labs', InteractiveLab), ('challenges', TheoryChallenge)]:
+                    valid = []
+                    items = candidate.get(field, [])
+                    for item in items if isinstance(items, list) else []:
+                        try:
+                            valid.append(model.model_validate(item).model_dump())
+                        except ValidationError as error:
+                            logger.warning('[YandexGPT] Пропущен необязательный %s при сборке материала: %s', field,
+                                           error.errors(include_input=False, include_context=False, include_url=False))
+                    candidate[field] = valid
             result = StudyMaterial.model_validate(candidate)
             if attempt:
                 logger.info('[YandexGPT] Исправление структуры успешно: итоговый материал прошёл проверку')
@@ -172,7 +186,7 @@ def extract_text(filename: str, data: bytes) -> str:
     return text
 
 
-async def generate(text: str) -> StudyMaterial:
+async def generate(text: str, *, on_preview=None, on_progress=None) -> StudyMaterial:
     key = os.getenv('YANDEX_API_KEY')
     if not key:
         logger.error('[YandexGPT] Отсутствует переменная YANDEX_API_KEY')
@@ -206,7 +220,10 @@ answer: индекс правильного ответа 0–3, explanation: о�
             summary = ('\n\n'.join(f'## Часть {index}\n\n{section}'
                                    for index, section in enumerate(sections, start=1)) if sections else None)
             result = await validated_material(client, system, prepared, key=key, folder=folder, summary=summary)
-            labs, challenges = await create_activities(client, text, result.summary, key=key, folder=folder)
+            if on_preview:
+                await on_preview(result)
+            activity_options = {'on_progress': on_progress} if on_progress else {}
+            labs, challenges = await create_activities(client, text, result.summary, key=key, folder=folder, **activity_options)
             def unique(items):
                 seen, kept = set(), []
                 for item in items:
@@ -247,7 +264,7 @@ async def health():
 
 
 @app.post('/api/material')
-async def material(file: UploadFile = File(...), group_id: int = Form(...), user: User = Depends(teacher), session: Session = Depends(db)):
+async def material(file: UploadFile = File(...), group_id: int = Form(...), stream: bool = False, user: User = Depends(teacher), session: Session = Depends(db)):
     require_group(user, group_id, session)
     try:
         data = await file.read(MAX_BYTES + 1)
@@ -256,14 +273,52 @@ async def material(file: UploadFile = File(...), group_id: int = Form(...), user
         text = await run_in_threadpool(extract_text, file.filename or '', data)
     finally:
         await file.close()
+    if stream:
+        async def events():
+            queue = asyncio.Queue()
+            async def preview(result):
+                await queue.put({'type': 'preview', 'material': dict(result.model_dump(), teacher_name=user.name, group_name=session.get(Group, group_id).name)})
+            async def progress(value):
+                await queue.put({'type': 'progress', **value})
+            async def work():
+                try:
+                    generated = await generate(text, on_preview=preview, on_progress=progress)
+                    record = save_generated(generated, group_id, user, session)
+                    await queue.put({'type': 'complete', 'material': material_payload(record, user, session)})
+                except HTTPException as error:
+                    await queue.put({'type': 'error', 'detail': error.detail})
+                except Exception as error:
+                    session.rollback()
+                    logger.error('Создание материала завершилось ошибкой (%s); содержимое не записано', type(error).__name__)
+                    await queue.put({'type': 'error', 'detail': 'Не удалось сохранить материал. Попробуйте ещё раз.'})
+            task = asyncio.create_task(work())
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=15)
+                    except TimeoutError:
+                        event = {'type': 'heartbeat'}
+                    yield json.dumps(event, ensure_ascii=False) + '\n'
+                    if event['type'] in ('complete', 'error'):
+                        break
+            finally:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        return StreamingResponse(events(), media_type='application/x-ndjson',
+                                 headers={'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'})
     generated = await generate(text)
+    return material_payload(save_generated(generated, group_id, user, session), user, session)
+
+
+def save_generated(generated, group_id, user, session):
     session.expire_all()
     require_group(user, group_id, session)
     record = Material(teacher_id=user.id, group_id=group_id, title=generated.title,
                       content=generated.model_dump_json(), published=False)
     session.add(record)
     session.commit()
-    return material_payload(record, user, session)
+    return record
 
 
 

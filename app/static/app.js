@@ -7,6 +7,7 @@ const node = (tag, text, cls) => {
 };
 let user = null;
 let selected = null;
+let uploadController = null;
 let generation = 0;
 const materialMatch = window.location.pathname.match(/^\/materials\/(\d+)\/?$/);
 const materialId = materialMatch ? materialMatch[1] : null;
@@ -40,6 +41,8 @@ function json(method, body) {
 }
 function notice(message) { $('notice').textContent = message; }
 function setUser(value) {
+  uploadController?.abort();
+  uploadController = null;
   generation++;
   user = value;
   selected = null;
@@ -118,13 +121,16 @@ document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () =>
   ['summary', 'cards', 'quiz'].forEach(id => $(id).hidden = id !== button.dataset.tab);
   window.StudyPresentation?.enhance($(button.dataset.tab));
 });
-function render(data) {
-  selected = data;
-  $('material-url').value = new URL(`/materials/${data.id}`, window.location.origin).href;
+function render(data, preview = false) {
+  selected = preview ? null : data;
+  $('material-url').parentElement.hidden = preview;
+  $('preview-status').hidden = !preview;
+  if (preview) $('preview-status').textContent = 'Предпросмотр: конспект готов. Создаём интерактив; материал пока не сохранён.';
+  $('material-url').value = preview ? '' : new URL(`/materials/${data.id}`, window.location.origin).href;
   $('title').textContent = data.title;
   $('material-author').textContent = `Преподаватель: ${data.teacher_name} · Группа: ${data.group_name}`;
   $('statistics').hidden = true;
-  $('teacher-actions').hidden = user.role !== 'teacher';
+  $('teacher-actions').hidden = preview || user.role !== 'teacher';
   $('publish').textContent = data.published ? 'Снять с публикации' : 'Опубликовать для группы';
   $('summary').replaceChildren();
   renderSummary($('summary'), data.summary);
@@ -135,6 +141,7 @@ function render(data) {
   $('summary').append(list);
   renderCardActivities(data.cards);
   renderQuiz(data);
+  if (preview) $('quiz').querySelectorAll('button,input,textarea,select').forEach(control => { control.disabled = true; });
   $('result').hidden = false;
   typesetMath($('result'));
   document.querySelector('[data-tab="summary"]').click();
@@ -218,6 +225,33 @@ $('show-stats').onclick = async () => {
     $('statistics').hidden = false;
   } catch (error) { notice(error.message); }
 };
+async function streamMaterial(form, onEvent, signal) {
+  const response = await fetch('/api/material?stream=true', {method: 'POST', body: form, signal, headers: {'X-Study-Request': '1'}});
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(typeof error.detail === 'string' ? error.detail : 'Не удалось обработать материал.');
+  }
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let pending = '', complete = false;
+  const accept = line => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line);
+    if (event.type === 'error') throw new Error(event.detail);
+    if (event.type === 'complete') complete = true;
+    onEvent(event);
+  };
+  try {
+    while (true) {
+      const {value, done} = await reader.read();
+      pending += decoder.decode(value, {stream: !done});
+      let boundary;
+      while ((boundary = pending.indexOf('\n')) !== -1) { accept(pending.slice(0, boundary)); pending = pending.slice(boundary + 1); }
+      if (done) break;
+    }
+    if (pending.trim()) accept(pending);
+    if (!complete) throw new Error('Соединение прервалось до сохранения материала. Повторите загрузку.');
+  } finally { reader.releaseLock(); }
+}
 $('upload').onsubmit = async event => {
   event.preventDefault();
   const file = $('file').files[0];
@@ -229,11 +263,28 @@ $('upload').onsubmit = async event => {
   $('status').textContent = 'Читаем материал и готовим задания… Готовим подробный конспект с объяснениями. Большие тексты обрабатываются по разделам. Для сканов OCR может занять до пяти минут, затем потребуется время на нейросеть.';
   const form = new FormData(); form.append('file', file); form.append('group_id', $('target-group').value);
   try {
-    const data = await api('/api/material', {method: 'POST', body: form});
-    if (version !== generation) return;
-    window.location.assign(`/materials/${data.id}`);
-  } catch (error) { $('status').textContent = error.message; }
-  finally { $('submit').disabled = false; }
+    uploadController = new AbortController();
+    await streamMaterial(form, event => {
+      if (version !== generation) return;
+      if (event.type === 'preview') {
+        render(event.material, true);
+        $('status').textContent = 'Конспект готов — его уже можно читать ниже. Создаём интерактив…';
+      } else if (event.type === 'progress') {
+        const message = event.done ? 'Интерактив обработан. Сохраняем готовый материал…' : `Создаём интерактив: раздел ${Math.min(event.completed + 1, event.total)} из ${event.total}. Готовых активностей: ${event.accepted}.`;
+        $('status').textContent = message;
+        $('preview-status').textContent = 'Предпросмотр · ' + message;
+      } else if (event.type === 'complete') {
+        window.location.assign(`/materials/${event.material.id}`);
+      }
+    }, uploadController.signal);
+  } catch (error) {
+    if (version === generation && error.name !== 'AbortError') {
+      $('status').textContent = error.message;
+      if (!$('preview-status').hidden) $('preview-status').textContent = 'Предпросмотр не сохранён. ' + error.message;
+    }
+  } finally {
+    if (version === generation) { $('submit').disabled = false; uploadController = null; }
+  }
 };
 (async () => {
   try {

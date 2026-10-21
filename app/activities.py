@@ -1,40 +1,49 @@
-"""Generate activities from every original fragment, not from compressed overview notes."""
+"""Optional activities: keep valid items, skip failures without losing the lesson."""
 import json
 import re
+import httpx
 from fastapi import HTTPException
 from pydantic import ValidationError
-from .interactive import ActivityBatch
+from .interactive import ActivityBatch, InteractiveLab, TheoryChallenge
 from .llm import INTERACTIVE_GUIDANCE, complete, logger, split_text
 
 ACTIVITY_CHARS = 8000
 
 
-async def create_activities(client, source, summary, *, key, folder):
+async def create_activities(client, source, summary, *, key, folder, on_progress=None):
     labs, challenges = [], []
     pieces = split_text(source, ACTIVITY_CHARS)
-    # Help the model place each activity next to a real heading in the completed summary.
     headings = '\n'.join(re.findall(r'^#{1,6}\s+(.+)$', summary, re.M))[:4000]
     schema = json.dumps(ActivityBatch.model_json_schema(), ensure_ascii=False)
     for index, piece in enumerate(pieces, 1):
+        if on_progress:
+            await on_progress({'completed': index - 1, 'total': len(pieces), 'accepted': len(labs) + len(challenges)})
         system = '[THEORY_ACTIVITIES]\n' + INTERACTIVE_GUIDANCE + f'\nФрагмент {index}/{len(pieces)}. topic выбирай из подходящих заголовков конспекта:\n{headings}\nJSON Schema:\n{schema}'
-        text = piece
-        for attempt in range(2):
-            content = await complete(client, system, text, key=key, folder=folder,
+        try:
+            content = await complete(client, system, piece, key=key, folder=folder,
                                      structured=True, max_tokens=6000,
-                                     stage=f'интерактив раздела {index}/{len(pieces)}' + (' — исправление 1/1' if attempt else ''))
-            try:
-                batch = ActivityBatch.model_validate_json(content)
-                labs.extend(batch.labs)
-                challenges.extend(batch.challenges)
-                logger.info('[YandexGPT] Интерактив раздела %s/%s: экспериментов=%s, заданий=%s',
-                            index, len(pieces), len(batch.labs), len(batch.challenges))
-                break
-            except ValidationError as error:
-                issues = error.errors(include_input=False, include_context=False, include_url=False)
-                logger.error('[YandexGPT] Проверка интерактива раздела %s/%s: %s', index, len(pieces), issues)
-                if attempt:
-                    raise HTTPException(502, 'Нейросеть не смогла подготовить интерактив раздела. Материал не сохранён; попробуйте ещё раз.')
-                # Repair only this fragment. Never repeat good chapters or earlier activities.
-                text = json.dumps({'source': piece, 'validation_errors': issues}, ensure_ascii=False)
-                system += '\nИсправь ошибки структуры и вычислений. source — единственный источник фактов. Верни оба массива labs и challenges.'
+                                     stage=f'интерактив раздела {index}/{len(pieces)}')
+        except (httpx.HTTPError, HTTPException) as error:
+            logger.warning('[YandexGPT] Интерактив остановлен на разделе %s/%s (%s); готовый материал будет сохранён без оставшихся активностей', index, len(pieces), type(error).__name__)
+            break
+        try:
+            batch = json.loads(content)
+            if not isinstance(batch, dict):
+                raise ValueError('Expected object')
+        except (ValueError, TypeError):
+            logger.warning('[YandexGPT] Интерактив раздела %s/%s пропущен: неверный JSON; готовый конспект сохранится', index, len(pieces))
+            continue
+        for field, model, target in [('labs', InteractiveLab, labs), ('challenges', TheoryChallenge, challenges)]:
+            items = batch.get(field, [])
+            if not isinstance(items, list):
+                logger.warning('[YandexGPT] Интерактив раздела %s/%s: %s пропущен — ожидался массив', index, len(pieces), field)
+                continue
+            for item_index, item in enumerate(items[:8]):
+                try:
+                    target.append(model.model_validate(item))
+                except ValidationError as error:
+                    logger.warning('[YandexGPT] Пропущен интерактив раздела %s/%s %s[%s]: %s', index, len(pieces), field, item_index,
+                                   error.errors(include_input=False, include_context=False, include_url=False))
+    if on_progress:
+        await on_progress({'completed': index if pieces else 0, 'total': len(pieces), 'accepted': len(labs) + len(challenges), 'done': True})
     return labs, challenges
