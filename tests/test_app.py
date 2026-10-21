@@ -80,6 +80,8 @@ def test_yandex_contract(monkeypatch):
         assert request.headers['Authorization'] == 'Api-Key test-key'
         assert body['modelUri'] == 'gpt://test-folder/yandexgpt/latest'
         assert body['messages'][1]['text'] == TEXT
+        if '[THEORY_ACTIVITIES]' in body['messages'][0]['text']:
+            return httpx.Response(200, json={'result': {'alternatives': [{'message': {'text': json.dumps({'labs': [], 'challenges': []})}}]}})
         return httpx.Response(200, json={'result': {'alternatives': [
             {'message': {'text': json.dumps(RESULT)}}]}})
 

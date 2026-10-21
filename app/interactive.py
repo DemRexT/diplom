@@ -2,6 +2,7 @@
 import ast
 import math
 import operator
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 FUNCTIONS = {'sqrt': math.sqrt, 'abs': abs, 'sin': math.sin, 'cos': math.cos,
@@ -82,7 +83,8 @@ class InteractiveLab(BaseModel):
     task: str = Field(min_length=1, max_length=1000)
     formula: str = Field(min_length=1, max_length=1000)
     parameters: list[Parameter] = Field(min_length=1, max_length=6)
-    outputs: list[Calculation] = Field(min_length=1, max_length=6)
+    outputs: list[Calculation] = Field(min_length=1, max_length=9)
+    visualization: Literal['graph', 'bars', 'vector', 'matrix'] = 'graph'
     plot_variable: str | None = None
 
     @model_validator(mode='after')
@@ -92,6 +94,37 @@ class InteractiveLab(BaseModel):
             raise ValueError('Имена параметров должны быть уникальны')
         if self.plot_variable is not None and self.plot_variable not in values:
             raise ValueError('Неизвестный параметр графика')
+        if self.visualization == 'vector' and len(self.outputs) != 2:
+            raise ValueError('Для вектора нужны две компоненты')
+        if self.visualization == 'matrix' and len(self.outputs) not in (4, 9):
+            raise ValueError('Для матрицы нужны 4 или 9 компонент')
         for output in self.outputs:
             evaluate(output.expression, values)
         return self
+
+
+class TheoryChallenge(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    kind: Literal['choice', 'order']
+    title: str = Field(min_length=1, max_length=200)
+    topic: str = Field(min_length=1, max_length=150)
+    prompt: str = Field(min_length=1, max_length=1500)
+    items: list[str] = Field(min_length=2, max_length=6)
+    answer: list[int] = Field(min_length=1, max_length=6)
+    explanation: str = Field(min_length=1, max_length=2000)
+
+    @model_validator(mode='after')
+    def correct_answer(self):
+        if any(not item.strip() or len(item) > 1000 for item in self.items):
+            raise ValueError('Пустой или слишком длинный вариант')
+        if any(type(index) is not int or index < 0 or index >= len(self.items) for index in self.answer):
+            raise ValueError('Неизвестный индекс ответа')
+        if (self.kind == 'choice' and len(self.answer) != 1) or (self.kind == 'order' and sorted(self.answer) != list(range(len(self.items)))):
+            raise ValueError('Неверный ответ для типа задания')
+        return self
+
+
+class ActivityBatch(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    labs: list[InteractiveLab] = Field(max_length=8)
+    challenges: list[TheoryChallenge] = Field(max_length=8)

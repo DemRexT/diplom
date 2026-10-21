@@ -12,11 +12,16 @@ from test_accounts import accounts, login
 from test_app import RESULT
 
 
-def mock_yandex(monkeypatch, handler):
+def mock_yandex(monkeypatch, handler, activity_handler=None):
     monkeypatch.setenv('YANDEX_API_KEY', 'test-key')
     monkeypatch.setenv('YANDEX_FOLDER_ID', 'test-folder')
     real_client = httpx.AsyncClient
-    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    def dispatch(request):
+        body = json.loads(request.content)
+        if '[THEORY_ACTIVITIES]' in body['messages'][0]['text']:
+            return activity_handler(request) if activity_handler else reply(json.dumps({'labs': [], 'challenges': []}))
+        return handler(request)
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: real_client(transport=httpx.MockTransport(dispatch), **kwargs))
 
 
 def reply(text, status='ALTERNATIVE_STATUS_FINAL'):

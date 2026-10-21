@@ -9,6 +9,7 @@ import mimetypes
 from pathlib import Path
 from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright
+from playground_checks import run as playground_checks
 
 ROOT = Path(__file__).resolve().parents[1]
 SUMMARY = r'''## Определение тензора
@@ -113,6 +114,7 @@ def main():
         }""")
         assert page.locator('#domain-test .lab-domain-error').count() == 1
         assert page.locator('#domain-test svg polyline').count() == 2
+        playground_checks(page, LAB)
         assert page.evaluate('window.pwned') is None
         assert not external, external
         assert not errors, errors
