@@ -40,6 +40,7 @@ def test_oauth_chat_and_interactive_share_token_and_preserve_preview(monkeypatch
             assert uuid.UUID(request.headers['RqUID'])
             assert parse_qs(request.content.decode()) == {'scope': ['GIGACHAT_API_PERS']}
             return token_reply()
+        assert str(request.url) == 'https://api.giga.chat/v1/chat/completions'
         assert request.headers['Authorization'] == 'Bearer private-token'
         body = json.loads(request.content)
         assert body['model'] == 'GigaChat' and body['max_tokens'] > 0

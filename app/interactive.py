@@ -124,7 +124,48 @@ class TheoryChallenge(BaseModel):
         return self
 
 
+class GeneratedModule(BaseModel):
+    """Source is stored as data; execution is restricted to a browser Worker."""
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    title: str = Field(min_length=1, max_length=200)
+    topic: str = Field(min_length=1, max_length=150)
+    explanation: str = Field(min_length=1, max_length=1500)
+    task: str = Field(min_length=1, max_length=1000)
+    html: str = Field(min_length=1, max_length=6000)
+    css: str = Field(default='', max_length=4000)
+    javascript: str = Field(min_length=1, max_length=12000)
+
+    @model_validator(mode='after')
+    def usable_interface(self):
+        from html.parser import HTMLParser
+        class Inspector(HTMLParser):
+            controls = 0
+            ids = None
+            def __init__(self):
+                super().__init__()
+                self.ids = set()
+            def handle_starttag(self, tag, attrs):
+                values = dict(attrs)
+                identity = values.get('id')
+                if identity:
+                    if identity in self.ids or len(identity) > 80:
+                        raise ValueError('Идентификаторы элементов должны быть уникальны и короче 80 символов')
+                    self.ids.add(identity)
+                if tag in ('input', 'button', 'select') and identity:
+                    self.controls += 1
+                if tag in ('script', 'iframe', 'object', 'embed', 'link', 'meta', 'base', 'form'):
+                    raise ValueError('HTML должен содержать только интерфейс; код передаётся в javascript')
+        inspector = Inspector()
+        inspector.feed(self.html)
+        if not inspector.controls or len(inspector.ids) > 60:
+            raise ValueError('Нужен хотя бы один элемент управления с id; не более 60 элементов с id')
+        if not self.javascript.strip():
+            raise ValueError('Пустой код интерактива')
+        return self
+
+
 class ActivityBatch(BaseModel):
     model_config = ConfigDict(extra='forbid')
     labs: list[InteractiveLab] = Field(max_length=8)
     challenges: list[TheoryChallenge] = Field(max_length=8)
+    modules: list[GeneratedModule] = Field(default_factory=list, max_length=2)

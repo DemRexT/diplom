@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from .llm import logger, safe_diagnostic, provider_diagnostic
 
 OAUTH_URL = 'https://ngw.devices.sberbank.ru:9443/api/v2/oauth'
-CHAT_URL = 'https://gigachat.devices.sberbank.ru/api/v1/chat/completions'
+CHAT_URL = 'https://api.giga.chat/v1/chat/completions'
 
 
 @dataclass

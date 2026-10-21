@@ -1,0 +1,9 @@
+{
+  "title": "Исследуй квадрат",
+  "topic": "Квадрат числа",
+  "explanation": "Дополнительный пример ИИ: значение квадрата числа.",
+  "task": "Измени x и найди значение 16.",
+  "html": "<label>x<input id=\"x\" type=\"range\" min=\"0\" max=\"5\" step=\"1\" value=\"2\"></label><output id=\"answer\"></output><canvas id=\"scene\" width=\"600\" height=\"360\"></canvas><button id=\"reset\">Сброс</button>",
+  "css": "output{font-size:24px;font-weight:bold}",
+  "javascript": "function render(){const x=Number(playground.input(\"x\"));playground.text(\"answer\",x*x);playground.draw(\"scene\",[{type:\"circle\",x:100,y:100,r:x*10,color:\"#638653\"}]);if(x===4)playground.complete();}playground.onInput(\"x\",render);playground.onClick(\"reset\",()=>{playground.value(\"x\",2);render();});render();"
+}

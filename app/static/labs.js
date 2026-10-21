@@ -298,8 +298,8 @@
     show.onclick=()=>{explanation.hidden=!explanation.hidden;};restart.onclick=reset;
     const actions=node('div',undefined,'lab-toolbar');actions.append(check,show,restart);root.append(actions,feedback,explanation);reset();return root;
   }
-  function render(root,labs,challenges=[]){
-    const activities=[...(Array.isArray(labs)?labs:[]).map(data=>({kind:'lab',data})),...(Array.isArray(challenges)?challenges:[]).map(data=>({kind:'challenge',data}))];
+  function render(root,labs,challenges=[],modules=[]){
+    const activities=[...(Array.isArray(labs)?labs:[]).map(data=>({kind:'lab',data})),...(Array.isArray(challenges)?challenges:[]).map(data=>({kind:'challenge',data})),...(Array.isArray(modules)?modules:[]).map(data=>({kind:'module',data}))];
     if(!activities.length)return;
     const headings=[...root.querySelectorAll('h1,h2,h3,h4,h5,h6')];
     const normalize=value=>String(value).toLocaleLowerCase().replace(/^\s*[\d.\s]+/,'').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
@@ -309,9 +309,9 @@
     route.append(node('h2','Твоя игровая лаборатория'),node('p','Крути параметры, оживляй формулы, проверяй прогнозы и собирай решения. Выполняй мини-миссии — отмечай свой прогресс.'),status,progress,links);
     activities.forEach(({kind,data},index)=>{
       try{
-        const link=node('button',(kind==='lab'?'⚗ ':'◆ ')+data.title);link.type='button';
+        const link=node('button',(kind==='lab'?'⚗ ':kind==='module'?'🎮 ':'◆ ')+data.title);link.type='button';
         const complete=()=>{completed.add(index);link.classList.add('completed');link.setAttribute('aria-label',data.title+' — пройдено');sync();};
-        const view=kind==='lab'?labView(data,complete):challengeView(data,complete);
+        const view=kind==='lab'?labView(data,complete):kind==='module'?window.StudyModules.create(data,complete):challengeView(data,complete);
         total++;link.onclick=()=>view.scrollIntoView({behavior:'smooth',block:'center'});links.append(link);
         const topic=normalize(data.topic),heading=headings.find(item=>normalize(item.textContent)===topic);
         if(heading){let position=heading;while(position.nextElementSibling&&!headings.includes(position.nextElementSibling))position=position.nextElementSibling;position.after(view);}else fallback.append(view);

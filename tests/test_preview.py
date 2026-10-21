@@ -20,7 +20,7 @@ def test_preview_arrives_while_interactive_is_still_running(database, monkeypatc
         async def slow_activities(client, source, summary, **kwargs):
             entered.set()
             await gate.wait()
-            return [], []
+            return [], [], []
         monkeypatch.setattr(main, 'create_activities', slow_activities)
         with database() as session:
             user = session.scalar(select(User).where(User.username == 'teacher'))
