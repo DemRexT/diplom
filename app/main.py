@@ -19,6 +19,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, ConfigDict, StrictInt
 from pypdf import PdfReader
+from .ocr import recognize_pages
+from starlette.concurrency import run_in_threadpool
 
 ROOT = Path(__file__).parent
 MAX_BYTES = 10 * 1024 * 1024
@@ -78,7 +80,15 @@ def extract_text(filename: str, data: bytes) -> str:
             reader = PdfReader(io.BytesIO(data))
             if len(reader.pages) > 200:
                 raise HTTPException(413, 'Допускается не более 200 страниц.')
-            text = '\n'.join(page.extract_text() or '' for page in reader.pages)
+            pages = [page.extract_text() or '' for page in reader.pages]
+            scanned = [index for index, page in enumerate(reader.pages)
+                       if len(pages[index].strip()) < 40 and page.get_contents() is not None]
+            if scanned:
+                recognized = recognize_pages(data, scanned)
+                for index in scanned:
+                    # Preserve an existing short text layer if OCR cannot improve it.
+                    pages[index] = recognized[index] if len(recognized[index]) > len(pages[index].strip()) else pages[index]
+            text = '\n'.join(pages)
         elif suffix == '.docx':
             doc = Document(io.BytesIO(data))
             text = '\n'.join([p.text for p in doc.paragraphs] + [
@@ -93,7 +103,7 @@ def extract_text(filename: str, data: bytes) -> str:
         raise HTTPException(422, 'Не удалось прочитать файл. Проверьте формат и отсутствие пароля.')
     text = text.strip()
     if len(text) < 100:
-        raise HTTPException(422, 'Недостаточно текста. Для сканов PDF сначала требуется распознавание OCR.')
+        raise HTTPException(422, 'Недостаточно текста. Проверьте читаемость документа и качество сканов.')
     if len(text) > MAX_TEXT:
         raise HTTPException(413, 'Материал слишком большой: максимум 45 000 символов. Загрузите отдельную главу.')
     return text
@@ -152,7 +162,7 @@ async def material(file: UploadFile = File(...), group_id: int = Form(...), user
         data = await file.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES:
             raise HTTPException(413, 'Максимальный размер файла — 10 МБ.')
-        text = extract_text(file.filename or '', data)
+        text = await run_in_threadpool(extract_text, file.filename or '', data)
     finally:
         await file.close()
     generated = await generate(text)

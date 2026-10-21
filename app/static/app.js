@@ -110,7 +110,7 @@ $('logout').onclick = async () => {
 };
 $('file').onchange = () => {
   const file = $('file').files[0];
-  $('filename').textContent = file ? file.name : 'PDF, DOCX или TXT · до 10 МБ';
+  $('filename').textContent = file ? file.name : 'PDF (включая сканы), DOCX или TXT · до 10 МБ';
   $('submit').disabled = !file;
 };
 document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => {
@@ -230,7 +230,7 @@ $('upload').onsubmit = async event => {
   if (!$('target-group').value) { $('status').textContent = 'Администратор должен назначить вам группу.'; return; }
   const version = generation;
   $('submit').disabled = true;
-  $('status').textContent = 'Читаем материал и готовим задания…';
+  $('status').textContent = 'Читаем материал и готовим задания… Для сканов распознавание может занять до пяти минут.';
   const form = new FormData(); form.append('file', file); form.append('group_id', $('target-group').value);
   try {
     const data = await api('/api/material', {method: 'POST', body: form});

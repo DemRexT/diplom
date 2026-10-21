@@ -8,3 +8,5 @@ pytest==8.3.5
 SQLAlchemy==2.0.40
 psycopg[binary]==3.2.6
 alembic==1.15.2
+pypdfium2==5.14.0
+Pillow==11.2.1
