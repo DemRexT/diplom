@@ -1,5 +1,8 @@
 """Bound each model request while processing every fragment of a long document."""
 import os
+import logging
+
+logger = logging.getLogger('uvicorn.error')
 
 import httpx
 from fastapi import HTTPException
@@ -55,48 +58,106 @@ def split_text(text: str, limit: int = CHUNK_CHARS) -> list[str]:
     return result
 
 
+def safe_diagnostic(value, *sensitive) -> str:
+    """Log selected diagnostic fields, never request bodies or generated text."""
+    result = str(value)
+    for secret in sensitive:
+        if secret:
+            result = result.replace(secret, '[скрыто]')
+    return result.replace('\r', ' ').replace('\n', ' ')[:2000]
+
+
+def provider_diagnostic(response, *sensitive) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        return 'Ответ не в формате JSON; тело ответа не записано'
+    error = body.get('error', body) if isinstance(body, dict) else {}
+    if not isinstance(error, dict):
+        return 'Ответ не содержит структурированного описания ошибки'
+    # Error details may echo the request. Limit logging to the provider's diagnostic fields.
+    fields = {name: safe_diagnostic(error[name], *sensitive)
+              for name in ('code', 'grpcCode', 'httpCode', 'message')
+              if name in error and isinstance(error[name], (str, int))}
+    return safe_diagnostic(fields or 'Провайдер не указал причину ошибки', *sensitive)
+
+
 async def complete(client: httpx.AsyncClient, system: str, text: str, *, key: str,
-                   folder: str, structured: bool, max_tokens: int) -> str:
+                   folder: str, structured: bool, max_tokens: int,
+                   stage: str = 'генерация материала') -> str:
+    model = os.getenv('YANDEX_MODEL', 'yandexgpt/latest')
+    log_model = safe_diagnostic(model, key)
     payload = {
-        'modelUri': f"gpt://{folder}/{os.getenv('YANDEX_MODEL', 'yandexgpt/latest')}",
+        'modelUri': f"gpt://{folder}/{model}",
         'completionOptions': {'stream': False, 'temperature': 0.2, 'maxTokens': str(max_tokens)},
         'messages': [{'role': 'system', 'text': system}, {'role': 'user', 'text': text}],
     }
     if structured:
         payload['jsonObject'] = True
-    response = await client.post(
-        'https://llm.api.cloud.yandex.net/foundationModels/v1/completion',
-        headers={'Authorization': f'Api-Key {key}'}, json=payload,
-    )
+    logger.info('[YandexGPT] Этап: %s | модель=%s | вход=%s символов | maxTokens=%s',
+                stage, log_model, len(text), max_tokens)
+    try:
+        response = await client.post(
+            'https://llm.api.cloud.yandex.net/foundationModels/v1/completion',
+            headers={'Authorization': f'Api-Key {key}'}, json=payload,
+        )
+    except httpx.TimeoutException:
+        logger.error('[YandexGPT] Этап: %s | модель=%s | тайм-аут запроса', stage, log_model)
+        raise
+    except httpx.HTTPError as error:
+        logger.error('[YandexGPT] Этап: %s | модель=%s | ошибка соединения: %s',
+                     stage, log_model, type(error).__name__)
+        raise
+    request_id = safe_diagnostic(response.headers.get('x-request-id') or response.headers.get('x-server-trace-id') or 'не указан', key, text, system)
+    if not response.is_success:
+        logger.error('[YandexGPT] Этап: %s | модель=%s | HTTP %s | request_id=%s | %s',
+                     stage, log_model, response.status_code, request_id,
+                     provider_diagnostic(response, key, text, system))
     if response.status_code == 429:
         raise HTTPException(503, 'YandexGPT ограничил частоту запросов. Попробуйте позже; материал ещё не сохранён.')
     response.raise_for_status()
-    alternative = response.json()['result']['alternatives'][0]
-    status = alternative.get('status')
+    try:
+        alternative = response.json()['result']['alternatives'][0]
+        status = alternative.get('status')
+        content = alternative['message']['text']
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError) as error:
+        logger.error('[YandexGPT] Этап: %s | HTTP %s | request_id=%s | некорректная структура ответа (%s); тело не записано',
+                     stage, response.status_code, request_id, type(error).__name__)
+        raise HTTPException(502, 'Нейросеть вернула некорректный результат. Попробуйте ещё раз.')
     if status in {'ALTERNATIVE_STATUS_TRUNCATED_FINAL', 'ALTERNATIVE_STATUS_CONTENT_FILTER'}:
+        reason = 'достигнут лимит токенов ответа' if status == 'ALTERNATIVE_STATUS_TRUNCATED_FINAL' else 'ответ заблокирован фильтром содержимого'
+        logger.error('[YandexGPT] Этап: %s | request_id=%s | статус=%s | %s | maxTokens=%s',
+                     stage, request_id, status, reason, max_tokens)
         raise HTTPException(502, 'Нейросеть не завершила ответ. Частичный материал не сохранён; попробуйте ещё раз.')
-    content = alternative['message']['text']
     if not isinstance(content, str) or not content.strip():
+        logger.error('[YandexGPT] Этап: %s | request_id=%s | пустой текст ответа', stage, request_id)
         raise HTTPException(502, 'Нейросеть вернула пустой ответ. Попробуйте ещё раз.')
+    logger.info('[YandexGPT] Этап: %s | HTTP %s | request_id=%s | ответ получен: %s символов',
+                stage, response.status_code, request_id, len(content))
     return content
 
 
 async def prepare_text(client: httpx.AsyncClient, text: str, *, key: str, folder: str) -> str:
     """Summarize all chunks, recursively reducing notes if they exceed the final budget."""
     prepared = text
+    level = 0
     while len(prepared) > DIRECT_TEXT_CHARS:
+        level += 1
         pieces = split_text(prepared)
         notes = []
         for index, piece in enumerate(pieces, start=1):
             note = await complete(
                 client, NOTES_PROMPT + f'\nФрагмент {index} из {len(pieces)}.', piece,
                 key=key, folder=folder, structured=False, max_tokens=1200,
+                stage=f'заметки для интерактива: уровень {level}, фрагмент {index}/{len(pieces)}',
             )
             if len(note) > MAX_NOTE_CHARS:
+                logger.error('[YandexGPT] Заметки для интерактива: фрагмент %s/%s | получено %s символов, максимум %s', index, len(pieces), len(note), MAX_NOTE_CHARS)
                 raise HTTPException(502, 'Нейросеть вернула слишком длинные промежуточные заметки. Попробуйте ещё раз.')
             notes.append(f'Раздел {index}:\n{note.strip()}')
         reduced = '\n\n'.join(notes)
         if len(reduced) >= len(prepared):
+            logger.error('[YandexGPT] Заметки для интерактива: уровень %s | текст не сократился: %s -> %s символов', level, len(prepared), len(reduced))
             raise HTTPException(502, 'Не удалось сократить материал для итогового запроса. Попробуйте ещё раз.')
         prepared = reduced
     return prepared
@@ -110,6 +171,7 @@ async def detailed_sections(client: httpx.AsyncClient, text: str, *, key: str, f
         section = await complete(
             client, DETAILED_PROMPT + f'\nЭто часть {index} из {len(pieces)} единого документа.',
             piece, key=key, folder=folder, structured=False, max_tokens=6000,
+            stage=f'конспект раздела {index}/{len(pieces)}',
         )
         sections.append(section.strip())
     return sections
