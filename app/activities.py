@@ -5,7 +5,7 @@ import httpx
 from fastapi import HTTPException
 from pydantic import ValidationError
 from .interactive import ActivityBatch, InteractiveLab, TheoryChallenge
-from .llm import INTERACTIVE_GUIDANCE, complete, logger, split_text
+from .llm import INTERACTIVE_GUIDANCE, complete, logger, split_text, provider_name
 
 ACTIVITY_CHARS = 8000
 
@@ -24,25 +24,25 @@ async def create_activities(client, source, summary, *, key, folder, on_progress
                                      structured=True, max_tokens=6000,
                                      stage=f'интерактив раздела {index}/{len(pieces)}')
         except (httpx.HTTPError, HTTPException) as error:
-            logger.warning('[YandexGPT] Интерактив остановлен на разделе %s/%s (%s); готовый материал будет сохранён без оставшихся активностей', index, len(pieces), type(error).__name__)
+            logger.warning(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Интерактив остановлен на разделе %s/%s (%s); готовый материал будет сохранён без оставшихся активностей', index, len(pieces), type(error).__name__)
             break
         try:
             batch = json.loads(content)
             if not isinstance(batch, dict):
                 raise ValueError('Expected object')
         except (ValueError, TypeError):
-            logger.warning('[YandexGPT] Интерактив раздела %s/%s пропущен: неверный JSON; готовый конспект сохранится', index, len(pieces))
+            logger.warning(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Интерактив раздела %s/%s пропущен: неверный JSON; готовый конспект сохранится', index, len(pieces))
             continue
         for field, model, target in [('labs', InteractiveLab, labs), ('challenges', TheoryChallenge, challenges)]:
             items = batch.get(field, [])
             if not isinstance(items, list):
-                logger.warning('[YandexGPT] Интерактив раздела %s/%s: %s пропущен — ожидался массив', index, len(pieces), field)
+                logger.warning(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Интерактив раздела %s/%s: %s пропущен — ожидался массив', index, len(pieces), field)
                 continue
             for item_index, item in enumerate(items[:8]):
                 try:
                     target.append(model.model_validate(item))
                 except ValidationError as error:
-                    logger.warning('[YandexGPT] Пропущен интерактив раздела %s/%s %s[%s]: %s', index, len(pieces), field, item_index,
+                    logger.warning(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Пропущен интерактив раздела %s/%s %s[%s]: %s', index, len(pieces), field, item_index,
                                    error.errors(include_input=False, include_context=False, include_url=False))
     if on_progress:
         await on_progress({'completed': index if pieces else 0, 'total': len(pieces), 'accepted': len(labs) + len(challenges), 'done': True})

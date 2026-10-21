@@ -124,9 +124,45 @@ def provider_diagnostic(response, *sensitive) -> str:
     return safe_diagnostic(fields or 'Провайдер не указал причину ошибки', *sensitive)
 
 
+def provider_name():
+    return os.getenv('LLM_PROVIDER', 'yandex').strip().lower()
+
+
+def provider_credentials():
+    provider = provider_name()
+    if provider == 'gigachat':
+        key = os.getenv('GIGACHAT_CREDENTIALS', '').strip().removeprefix('Basic ').strip()
+        if not key:
+            raise HTTPException(503, 'Задайте GIGACHAT_CREDENTIALS — ключ авторизации GigaChat в настройках сервера.')
+        return key, ''
+    if provider != 'yandex':
+        raise HTTPException(503, 'Неверный LLM_PROVIDER: допустимы gigachat и yandex.')
+    key, folder = os.getenv('YANDEX_API_KEY', '').strip(), os.getenv('YANDEX_FOLDER_ID', '').strip()
+    if not key or not folder:
+        raise HTTPException(503, 'API нейросети пока не настроен. Задайте YANDEX_API_KEY и YANDEX_FOLDER_ID на сервере.')
+    return key, folder
+
+
+def client_options():
+    # Preserve certificate checks. Add a user-provided root bundle when needed.
+    bundle = os.getenv('GIGACHAT_CA_BUNDLE', '').strip()
+    if provider_name() != 'gigachat' or not bundle:
+        return {}
+    import ssl
+    try:
+        context = ssl.create_default_context()
+        context.load_verify_locations(cafile=bundle)
+    except (OSError, ssl.SSLError):
+        raise HTTPException(503, 'Не удалось загрузить сертификаты из GIGACHAT_CA_BUNDLE. Проверьте путь к PEM-файлу.')
+    return {'verify': context}
+
+
 async def complete(client: httpx.AsyncClient, system: str, text: str, *, key: str,
                    folder: str, structured: bool, max_tokens: int,
                    stage: str = 'генерация материала') -> str:
+    if provider_name() == 'gigachat':
+        from .gigachat import complete_gigachat
+        return await complete_gigachat(client, system, text, key=key, structured=structured, max_tokens=max_tokens, stage=stage)
     model = os.getenv('YANDEX_MODEL', 'yandexgpt/latest')
     log_model = safe_diagnostic(model, key)
     payload = {
@@ -194,12 +230,12 @@ async def prepare_text(client: httpx.AsyncClient, text: str, *, key: str, folder
                 stage=f'заметки для общей сборки: уровень {level}, фрагмент {index}/{len(pieces)}',
             )
             if len(note) > MAX_NOTE_CHARS:
-                logger.error('[YandexGPT] Заметки для общей сборки: фрагмент %s/%s | получено %s символов, максимум %s', index, len(pieces), len(note), MAX_NOTE_CHARS)
+                logger.error(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Заметки для общей сборки: фрагмент %s/%s | получено %s символов, максимум %s', index, len(pieces), len(note), MAX_NOTE_CHARS)
                 raise HTTPException(502, 'Нейросеть вернула слишком длинные промежуточные заметки. Попробуйте ещё раз.')
             notes.append(f'Раздел {index}:\n{note.strip()}')
         reduced = '\n\n'.join(notes)
         if len(reduced) >= len(prepared):
-            logger.error('[YandexGPT] Заметки для общей сборки: уровень %s | текст не сократился: %s -> %s символов', level, len(prepared), len(reduced))
+            logger.error(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Заметки для общей сборки: уровень %s | текст не сократился: %s -> %s символов', level, len(prepared), len(reduced))
             raise HTTPException(502, 'Не удалось сократить материал для итогового запроса. Попробуйте ещё раз.')
         prepared = reduced
     return prepared

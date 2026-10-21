@@ -8,15 +8,35 @@
 cd /workspace/diplom
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
-export YANDEX_API_KEY='ваш ключ' # задавайте безопасно, не сохраняйте в Git
-export YANDEX_FOLDER_ID='идентификатор каталога'
-export YANDEX_MODEL=yandexgpt/latest
+export LLM_PROVIDER=gigachat
+export GIGACHAT_CREDENTIALS='ваш ключ авторизации' # не сохраняйте в Git
+export GIGACHAT_SCOPE=GIGACHAT_API_PERS
+export GIGACHAT_MODEL=GigaChat
 .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Используется нативный Foundation Models API YandexGPT. Для сервисного аккаунта нужна роль `ai.languageModels.user` в каталоге Yandex Cloud, включённый биллинг и API-ключ с разрешением на вызов моделей. Ключ используется только сервером. Без ключа и ID каталога сайт открывается, обработка сообщает о недоступности. `.env.example` описывает переменные; автоматического чтения `.env` нет.
+Для возврата к YandexGPT задайте `LLM_PROVIDER=yandex`, `YANDEX_API_KEY`, `YANDEX_FOLDER_ID` и при необходимости `YANDEX_MODEL=yandexgpt/latest`. Используется нативный Foundation Models API YandexGPT. Для сервисного аккаунта нужна роль `ai.languageModels.user` в каталоге Yandex Cloud, включённый биллинг и API-ключ с разрешением на вызов моделей. Ключ используется только сервером. Без ключа и ID каталога сайт открывается, обработка сообщает о недоступности. `.env.example` описывает переменные; автоматического чтения `.env` нет.
 
-На Windows создайте окружение командой `py -3.12 -m venv .venv`, используйте `.venv\Scripts\python -m pip install -r requirements.txt` и `.venv\Scripts\python -m uvicorn app.main:app --reload`. Переменные в PowerShell задаются через `$env:YANDEX_API_KEY` и `$env:YANDEX_FOLDER_ID`.
+### Подключение GigaChat
+
+Для переключения задайте процессу сервера:
+
+```text
+LLM_PROVIDER=gigachat
+GIGACHAT_CREDENTIALS=ключ_авторизации_из_кабинета_GigaChat_API
+GIGACHAT_SCOPE=GIGACHAT_API_PERS
+GIGACHAT_MODEL=GigaChat
+```
+
+В PyCharm: Run → Edit Configurations → Environment variables. Записи разделяются точкой с запятой (или добавляются отдельными строками в редакторе). Используйте **ключ авторизации** API из кабинета GigaChat; не токен доступа от веб-чата и не Yandex API key. Не присылайте ключ в переписку и не сохраняйте в Git. Для личного аккаунта используется `GIGACHAT_API_PERS`; для бизнес-доступа задайте соответствующий scope из своего кабинета (`GIGACHAT_API_B2B` или `GIGACHAT_API_CORP`). Модель задаётся идентификатором, доступным вашему аккаунту; `GigaChat` — начальная настройка, стоимость и доступность проверяются у провайдера.
+
+Сервер обменивает ключ на временный access token через `https://ngw.devices.sberbank.ru:9443/api/v2/oauth`, использует Bearer для `https://gigachat.devices.sberbank.ru/api/v1/chat/completions`, повторно использует токен внутри одной обработки и обновляет по сроку действия. При явном HTTP 401 токен обновляется и запрос повторяется ровно один раз. Тайм-ауты, ограничения частоты и прочие HTTP-ошибки автоматически не повторяются. JSON запрашивается промптом со схемой, не через неподдерживаемое предположение об OpenAI `response_format`.
+
+Проверка TLS не отключается. Если появляется ошибка проверки сертификата, установите доверенные сертификаты согласно официальной инструкции GigaChat и при необходимости укажите PEM-файл в `GIGACHAT_CA_BUNDLE`. Приложение добавляет его к системным доверенным сертификатам; неверный файл приводит к понятной ошибке настройки. Альтернатива — стандартный `SSL_CERT_FILE` для HTTPX. Не используйте `verify=False`. Справка провайдера: [авторизация](https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/post-token), [запрос к модели](https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/post-chat).
+
+После изменения переменных перезапустите сервер. `/health` показывает выбранного провайдера и наличие обязательных переменных, но не проверяет баланс и действительность ключа. Без `LLM_PROVIDER` остаётся YandexGPT для совместимости; для возврата задайте `LLM_PROVIDER=yandex`. Старые материалы не переписываются. Предпросмотр, проверка JSON, пропуск неудачного интерактива и роли работают с обоими провайдерами. Новых Python-зависимостей не требуется. Платный запрос с реальным GigaChat-ключом не выполнялся: автоматические проверки используют имитацию OAuth и ответов API.
+
+На Windows создайте окружение командой `py -3.12 -m venv .venv`, используйте `.venv\Scripts\python -m pip install -r requirements.txt` и `.venv\Scripts\python -m uvicorn app.main:app --reload`. Переменные в PowerShell задаются через `$env:LLM_PROVIDER="gigachat"`, `$env:GIGACHAT_CREDENTIALS="ваш ключ"`, `$env:GIGACHAT_SCOPE="GIGACHAT_API_PERS"`, `$env:GIGACHAT_MODEL="GigaChat"`.
 
 Проверки: `.venv/bin/python -m pytest -q`. API-документация: `/docs`, состояние: `/health`.
 

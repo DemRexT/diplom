@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, ConfigDict, StrictInt
 from pypdf import PdfReader
 from .ocr import recognize_pages
-from .llm import logger, complete, prepare_text, detailed_sections, DETAILED_CHUNK_CHARS, TEACHING_GUIDANCE
+from .llm import logger, complete, prepare_text, detailed_sections, DETAILED_CHUNK_CHARS, TEACHING_GUIDANCE, provider_credentials, provider_name, client_options
 from .interactive import InteractiveLab, TheoryChallenge
 from .activities import create_activities
 from starlette.concurrency import run_in_threadpool
@@ -80,9 +80,9 @@ class StudyMaterial(BaseModel):
 def log_material_error(error):
     if isinstance(error, ValidationError):
         issues = error.errors(include_input=False, include_context=False, include_url=False)
-        logger.error('[YandexGPT] Проверка итогового материала: %s', issues)
+        logger.error(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Проверка итогового материала: %s', issues)
         return issues
-    logger.error('[YandexGPT] Итоговый материал: некорректный JSON | строка=%s, столбец=%s | %s',
+    logger.error(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Итоговый материал: некорректный JSON | строка=%s, столбец=%s | %s',
                  error.lineno, error.colno, error.msg)
     return [{'type': 'json_invalid', 'line': error.lineno, 'column': error.colno, 'msg': error.msg}]
 
@@ -114,19 +114,19 @@ async def validated_material(client, system, prepared, *, key, folder, summary=N
                         try:
                             valid.append(model.model_validate(item).model_dump())
                         except ValidationError as error:
-                            logger.warning('[YandexGPT] Пропущен необязательный %s при сборке материала: %s', field,
+                            logger.warning(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Пропущен необязательный %s при сборке материала: %s', field,
                                            error.errors(include_input=False, include_context=False, include_url=False))
                     candidate[field] = valid
             result = StudyMaterial.model_validate(candidate)
             if attempt:
-                logger.info('[YandexGPT] Исправление структуры успешно: итоговый материал прошёл проверку')
+                logger.info(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Исправление структуры успешно: итоговый материал прошёл проверку')
             return result
         except (ValidationError, json.JSONDecodeError) as error:
             issues = log_material_error(error)
             if attempt:
-                logger.error('[YandexGPT] Исправление структуры не удалось; дополнительных попыток не будет')
+                logger.error(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Исправление структуры не удалось; дополнительных попыток не будет')
                 raise HTTPException(502, 'Нейросеть не смогла исправить формат результата. Материал не сохранён; попробуйте ещё раз.')
-            logger.warning('[YandexGPT] Исправление структуры: попытка 1/1; готовый конспект повторно не генерируется, если он уже получен')
+            logger.warning(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Исправление структуры: попытка 1/1; готовый конспект повторно не генерируется, если он уже получен')
             previous = {field: candidate[field] for field in ('title', 'key_points', 'cards', 'quiz', 'labs', 'challenges')
                         if isinstance(candidate, dict) and field in candidate}
             # Bound repair context without truncating JSON or the saved summary.
@@ -187,14 +187,7 @@ def extract_text(filename: str, data: bytes) -> str:
 
 
 async def generate(text: str, *, on_preview=None, on_progress=None) -> StudyMaterial:
-    key = os.getenv('YANDEX_API_KEY')
-    if not key:
-        logger.error('[YandexGPT] Отсутствует переменная YANDEX_API_KEY')
-        raise HTTPException(503, 'API нейросети пока не настроен. Задайте YANDEX_API_KEY и YANDEX_FOLDER_ID на сервере.')
-    folder = os.getenv('YANDEX_FOLDER_ID')
-    if not folder:
-        logger.error('[YandexGPT] Отсутствует переменная YANDEX_FOLDER_ID')
-        raise HTTPException(503, 'Не задан YANDEX_FOLDER_ID на сервере.')
+    key, folder = provider_credentials()
     system = TEACHING_GUIDANCE + '''
 Для этого запроса ответ — JSON объект без внешнего Markdown-ограждения:
 title (название), summary (развёрнутый связный учебный конспект с тематическими заголовками,
@@ -204,7 +197,7 @@ cards (4–6 объектов term, explanation),
 quiz (5 объектов question, options: ровно 4 строки, answer: индекс правильного ответа 0–3,
 explanation: объяснение по тексту). Проверяй понимание, избегай неоднозначных вопросов.'''
     try:
-        async with httpx.AsyncClient(timeout=90) as client:
+        async with httpx.AsyncClient(timeout=90, **client_options()) as client:
             sections = []
             if len(text) > DETAILED_CHUNK_CHARS:
                 sections = await detailed_sections(client, text, key=key, folder=folder)
@@ -238,17 +231,17 @@ answer: индекс правильного ответа 0–3, explanation: о�
     except httpx.TimeoutException:
         raise HTTPException(504, 'Нейросеть не ответила вовремя. Попробуйте ещё раз.')
     except httpx.HTTPError:
-        raise HTTPException(502, 'Ошибка API нейросети. Проверьте настройки и баланс провайдера.')
+        raise HTTPException(502, 'Ошибка API нейросети. Проверьте ключ, сертификаты, настройки и баланс провайдера.')
     except ValidationError as error:
-        logger.error('[YandexGPT] Проверка итогового материала: %s',
+        logger.error(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Проверка итогового материала: %s',
                      error.errors(include_input=False, include_context=False, include_url=False))
         raise HTTPException(502, 'Нейросеть вернула некорректный результат. Попробуйте ещё раз.')
     except json.JSONDecodeError as error:
-        logger.error('[YandexGPT] Итоговый материал: некорректный JSON | строка=%s, столбец=%s | %s',
+        logger.error(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Итоговый материал: некорректный JSON | строка=%s, столбец=%s | %s',
                      error.lineno, error.colno, error.msg)
         raise HTTPException(502, 'Нейросеть вернула некорректный результат. Попробуйте ещё раз.')
     except (ValueError, KeyError, IndexError, TypeError) as error:
-        logger.error('[YandexGPT] Итоговый материал: некорректная структура (%s); содержимое ответа не записано', type(error).__name__)
+        logger.error(f'[{"GigaChat" if provider_name() == "gigachat" else "YandexGPT"}] Итоговый материал: некорректная структура (%s); содержимое ответа не записано', type(error).__name__)
         raise HTTPException(502, 'Нейросеть вернула некорректный результат. Попробуйте ещё раз.')
 
 
@@ -260,7 +253,12 @@ async def index():
 
 @app.get('/health')
 async def health():
-    return {'status': 'ok', 'ai_configured': bool(os.getenv('YANDEX_API_KEY') and os.getenv('YANDEX_FOLDER_ID'))}
+    try:
+        provider_credentials()
+        configured = True
+    except HTTPException:
+        configured = False
+    return {'status': 'ok', 'ai_configured': configured, 'llm_provider': provider_name()}
 
 
 @app.post('/api/material')
