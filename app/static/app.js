@@ -131,17 +131,7 @@ function render(data) {
   const list = node('ul');
   data.key_points.forEach(point => list.append(node('li', point)));
   $('summary').append(list);
-  $('cards').replaceChildren(node('p', 'Нажми на карточку, чтобы увидеть объяснение.'));
-  data.cards.forEach(card => {
-    const button = node('button', card.term, 'card');
-    let open = false;
-    button.onclick = () => {
-      open = !open;
-      button.textContent = open ? card.explanation : card.term;
-      button.setAttribute('aria-pressed', String(open));
-    };
-    $('cards').append(button);
-  });
+  renderCardActivities(data.cards);
   renderQuiz(data);
   $('result').hidden = false;
   document.querySelector('[data-tab="summary"]').click();
@@ -359,4 +349,151 @@ function renderSummary(container, text) {
     else paragraph.push(line);
   }
   flush();
+}
+
+
+function shuffled(items) {
+  const copy = [...items];
+  for (let index = copy.length - 1; index > 0; index--) {
+    const other = Math.floor(Math.random() * (index + 1));
+    [copy[index], copy[other]] = [copy[other], copy[index]];
+  }
+  return copy;
+}
+
+function matchingCards(cards) {
+  // Merge ambiguous duplicate terms, then identical explanations, without losing their text.
+  const normalize = value => value.normalize('NFC').trim().replace(/\s+/g, ' ');
+  const terms = new Map();
+  cards.forEach(card => {
+    const key = normalize(card.term);
+    if (!terms.has(key)) terms.set(key, {term: card.term, explanations: new Map()});
+    terms.get(key).explanations.set(normalize(card.explanation), card.explanation);
+  });
+  const explanations = new Map();
+  terms.forEach(card => {
+    const explanation = [...card.explanations.values()].join('\n\n');
+    const key = normalize(explanation);
+    if (!explanations.has(key)) explanations.set(key, {terms: [], explanation});
+    explanations.get(key).terms.push(card.term);
+  });
+  return [...explanations.values()].map((card, id) => ({id, term: card.terms.join(' / '), explanation: card.explanation}));
+}
+
+function renderCardActivities(cards) {
+  const root = $('cards');
+  root.replaceChildren(node('h3', 'Закрепи понятия на практике'));
+  if (!cards.length) { root.append(node('p', 'Для этого материала пока нет карточек.')); return; }
+  const modes = node('div', null, 'card-modes');
+  modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Режим карточек');
+  const play = node('button', 'Соедини пары'); play.type = 'button';
+  const study = node('button', 'Повторить карточки'); study.type = 'button';
+  const game = node('section', null, 'matching-game');
+  const review = node('section', null, 'card-review'); review.hidden = true;
+  function selectMode(isGame) {
+    game.hidden = !isGame; review.hidden = isGame;
+    play.setAttribute('aria-pressed', String(isGame)); study.setAttribute('aria-pressed', String(!isGame));
+    play.classList.toggle('active', isGame); study.classList.toggle('active', !isGame);
+  }
+  play.onclick = () => selectMode(true); study.onclick = () => selectMode(false);
+  modes.append(play, study); root.append(modes, game, review);
+  selectMode(true);
+  renderMatchingGame(game, matchingCards(cards));
+  renderCardReview(review, cards);
+}
+
+function renderMatchingGame(root, cards) {
+  root.replaceChildren(node('p', 'Выбери термин и подходящее объяснение. Можно начинать с любой колонки. Найди все пары!'));
+  const score = node('p', null, 'match-score');
+  const progress = node('progress'); progress.max = cards.length; progress.value = 0;
+  progress.setAttribute('aria-label', 'Количество найденных пар');
+  const board = node('div', null, 'match-board');
+  const termColumn = node('div', null, 'match-column');
+  const explanationColumn = node('div', null, 'match-column');
+  termColumn.append(node('h4', 'Термины')); explanationColumn.append(node('h4', 'Объяснения'));
+  const feedback = node('p', 'Выбери первую пару.', 'match-feedback');
+  feedback.setAttribute('role', 'status'); feedback.setAttribute('aria-live', 'polite');
+  const restart = node('button', 'Перемешать и начать заново'); restart.type = 'button';
+  restart.onclick = () => { renderMatchingGame(root, cards); root.querySelector('.match-term').focus(); };
+  let term = null, explanation = null, mistakes = 0, mismatch = false;
+  const matched = new Set();
+  const termButtons = new Map(), explanationButtons = new Map();
+  function paint() {
+    score.textContent = `Найдено: ${matched.size} из ${cards.length} · Ошибок: ${mistakes}`;
+    progress.value = matched.size;
+    for (const [buttons, chosen] of [[termButtons, term], [explanationButtons, explanation]]) {
+      buttons.forEach((button, id) => {
+        const solved = matched.has(id), selected = chosen === id && !solved;
+        button.disabled = solved;
+        button.setAttribute('aria-pressed', String(selected));
+        button.classList.toggle('selected', selected);
+        button.classList.toggle('mismatch', mismatch && selected);
+        button.classList.toggle('matched', solved);
+        const value = button.classList.contains('match-term') ? cards[id].term : cards[id].explanation;
+        button.textContent = solved ? `✓ ${value}` : value;
+      });
+    }
+  }
+  function choose(side, id, event) {
+    if (matched.has(id)) return;
+    if (mismatch) { term = null; explanation = null; mismatch = false; }
+    if (side === 'term') term = term === id ? null : id;
+    else explanation = explanation === id ? null : id;
+    if (term !== null && explanation !== null) {
+      if (term === explanation) {
+        matched.add(term); term = null; explanation = null;
+        feedback.textContent = matched.size === cards.length
+          ? `Все пары найдены! ${mistakes === 0 ? 'Без ошибок — отличный результат.' : `Ошибок: ${mistakes}. Повтори сложные понятия и попробуй ещё раз.`}`
+          : `Верно! Найдено ${matched.size} из ${cards.length}. Продолжай.`;
+      } else {
+        mistakes++; mismatch = true;
+        feedback.textContent = 'Пока не совпало. Пара отмечена словами «Не совпало» и цветом. Выбери новую пару — можно попробовать ещё раз.';
+      }
+    } else feedback.textContent = term !== null ? 'Теперь выбери объяснение.' : explanation !== null ? 'Теперь выбери термин.' : 'Выбери первую пару.';
+    paint();
+    if (mismatch) {
+      termButtons.get(term).textContent = 'Не совпало: ' + cards[term].term;
+      explanationButtons.get(explanation).textContent = 'Не совпало: ' + cards[explanation].explanation;
+    }
+    if (event.detail === 0 && term === null && explanation === null && !mismatch) {
+      const next = [...termButtons.values()].find(button => !button.disabled);
+      (next || restart).focus();
+    }
+  }
+  for (const [side, column, buttons] of [['term', termColumn, termButtons], ['explanation', explanationColumn, explanationButtons]]) {
+    shuffled(cards).forEach(card => {
+      const button = node('button', side === 'term' ? card.term : card.explanation, `match-item match-${side}`);
+      button.type = 'button'; button.onclick = event => choose(side, card.id, event);
+      buttons.set(card.id, button); column.append(button);
+    });
+  }
+  board.append(termColumn, explanationColumn);
+  root.append(score, progress, board, feedback, restart);
+  paint();
+}
+
+function renderCardReview(root, cards) {
+  let deck = [...cards], index = 0, flipped = false;
+  const counter = node('p', null, 'review-count');
+  const flip = node('button', null, 'study-flip'); flip.type = 'button';
+  const hint = node('p', 'Вспомни объяснение, затем нажми на карточку, чтобы проверить себя.');
+  const controls = node('div', null, 'review-controls');
+  const previous = node('button', '← Назад'), next = node('button', 'Далее →'), mix = node('button', 'Перемешать');
+  [previous, next, mix].forEach(button => button.type = 'button');
+  function update() {
+    const card = deck[index];
+    counter.textContent = `Карточка ${index + 1} из ${deck.length}`;
+    const caption = node('span', flipped ? 'ОБЪЯСНЕНИЕ' : 'ТЕРМИН', 'flip-caption');
+    const body = node('span', flipped ? card.explanation : card.term, 'flip-text');
+    flip.replaceChildren(caption, body);
+    flip.setAttribute('aria-pressed', String(flipped));
+    flip.classList.toggle('is-flipped', flipped);
+    previous.disabled = index === 0; next.disabled = index === deck.length - 1;
+  }
+  flip.onclick = () => { flipped = !flipped; update(); };
+  previous.onclick = () => { if (index > 0) index--; flipped = false; update(); };
+  next.onclick = () => { if (index < deck.length - 1) index++; flipped = false; update(); };
+  mix.onclick = () => { deck = shuffled(deck); index = 0; flipped = false; update(); };
+  controls.append(previous, next, mix); root.append(counter, hint, flip, controls);
+  update();
 }
