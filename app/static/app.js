@@ -125,7 +125,9 @@ function render(data) {
   $('statistics').hidden = true;
   $('teacher-actions').hidden = user.role !== 'teacher';
   $('publish').textContent = data.published ? 'Снять с публикации' : 'Опубликовать для группы';
-  $('summary').replaceChildren(node('p', data.summary), node('h3', 'Главные мысли'));
+  $('summary').replaceChildren();
+  renderSummary($('summary'), data.summary);
+  $('summary').append(node('h3', 'Главные мысли для повторения'));
   const list = node('ul');
   data.key_points.forEach(point => list.append(node('li', point)));
   $('summary').append(list);
@@ -230,7 +232,7 @@ $('upload').onsubmit = async event => {
   if (!$('target-group').value) { $('status').textContent = 'Администратор должен назначить вам группу.'; return; }
   const version = generation;
   $('submit').disabled = true;
-  $('status').textContent = 'Читаем материал и готовим задания… Большие тексты обрабатываются по частям. Для сканов OCR может занять до пяти минут, затем потребуется время на нейросеть.';
+  $('status').textContent = 'Читаем материал и готовим задания… Готовим подробный конспект с объяснениями. Большие тексты обрабатываются по разделам. Для сканов OCR может занять до пяти минут, затем потребуется время на нейросеть.';
   const form = new FormData(); form.append('file', file); form.append('group_id', $('target-group').value);
   try {
     const data = await api('/api/material', {method: 'POST', body: form});
@@ -342,3 +344,19 @@ $('assign-teacher').onsubmit = async event => {
     await loadAdmin(); notice('Преподаватель назначен в группу.');
   } catch (error) { notice(error.message); }
 };
+
+
+function renderSummary(container, text) {
+  let paragraph = [];
+  const flush = () => {
+    if (paragraph.length) container.append(node('p', paragraph.join('\n'), 'summary-text'));
+    paragraph = [];
+  };
+  for (const line of text.split('\n')) {
+    const heading = line.match(/^#{1,3}\s+(.+)$/);
+    if (heading) { flush(); container.append(node('h3', heading[1])); }
+    else if (!line.trim()) flush();
+    else paragraph.push(line);
+  }
+  flush();
+}

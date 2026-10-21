@@ -4,3 +4,5 @@
 .library-item{display:block;text-decoration:none;padding:13px 21px;border-radius:10px}.material-link{display:grid;gap:8px;font-size:12px;margin:20px 0}.material-link input{width:100%;font:inherit;padding:12px;border:1px solid #b9c7b2;border-radius:8px;background:#fff}#back-library{display:inline-block;color:#2c4838;margin-bottom:18px}
 
 .auth-form select,.group-picker select,.quiz-editor input,.quiz-editor textarea,.quiz-editor select{width:100%;padding:12px;border:1px solid #b9c7b2;border-radius:8px;background:white;font:inherit}.group-picker{display:grid;gap:8px;text-align:left;margin:16px 0}.quiz-editor label{display:grid;gap:6px;margin:12px 0}.quiz-editor textarea{min-height:85px;resize:vertical}.editor-question{border:1px solid #dce2d8;border-radius:12px;margin:18px 0;padding:18px}.quiz-editor>button{margin:8px 8px 8px 0}.admin-group{border-top:1px solid #dce2d8;margin-top:22px;padding-top:14px}.assignment-row{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:12px 0;flex-wrap:wrap}
+
+.summary-text{font-size:16px;line-height:1.85;color:#34483b}#summary h3{margin-top:28px;line-height:1.4}

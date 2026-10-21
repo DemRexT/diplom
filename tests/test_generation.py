@@ -30,25 +30,38 @@ def test_split_preserves_every_character(source, limit):
     assert all(0 < len(chunk) <= limit for chunk in chunks)
 
 
-def test_long_material_all_fragments_reach_model_and_final_result(monkeypatch):
+def test_long_material_keeps_detailed_sections_instead_of_final_short_summary(monkeypatch):
     source = ''.join(f'Тема {i}: определение и пример.\n' for i in range(3000))
     assert len(source) > 45000
-    calls = []
+    details, notes, final_calls = [], [], []
     def handler(request):
         body = json.loads(request.content)
-        calls.append(body)
         assert request.headers['Authorization'] == 'Api-Key test-key'
+        text = body['messages'][1]['text']
         if body.get('jsonObject'):
-            for index in range(1, len(calls)):
-                assert f'Заметки фрагмента {index}' in body['messages'][1]['text']
-            assert len(body['messages'][1]['text']) <= llm.DIRECT_TEXT_CHARS
-            return reply(json.dumps(RESULT))
-        assert len(body['messages'][1]['text']) <= llm.CHUNK_CHARS
-        return reply(f'Заметки фрагмента {len(calls)}')
+            final_calls.append(body)
+            for index in range(1, len(notes) + 1):
+                assert f'Заметки для интерактива {index}' in text
+            assert len(text) <= llm.DIRECT_TEXT_CHARS
+            return reply(json.dumps(RESULT))  # This short summary must never replace the chapters.
+        if 'понятный учебный конспект' in body['messages'][0]['text']:
+            details.append(text)
+            assert len(text) <= llm.DETAILED_CHUNK_CHARS
+            return reply(f'## Объяснение раздела {len(details)}\n\n' + text[:6500])
+        notes.append(text)
+        assert len(text) <= llm.CHUNK_CHARS
+        return reply(f'Заметки для интерактива {len(notes)}')
     mock_yandex(monkeypatch, handler)
-    assert asyncio.run(main.generate(source)).model_dump() == RESULT
-    assert ''.join(call['messages'][1]['text'] for call in calls[:-1]) == source
-    assert len(calls) == len(llm.split_text(source)) + 1
+    generated = asyncio.run(main.generate(source))
+    assert ''.join(details) == source
+    assert ''.join(notes) == source
+    assert len(final_calls) == 1
+    assert len(generated.summary) > 10000
+    assert generated.summary != RESULT['summary']
+    for index in range(1, len(details) + 1):
+        assert f'## Объяснение раздела {index}' in generated.summary
+    for field in ['title', 'key_points', 'cards', 'quiz']:
+        assert generated.model_dump()[field] == RESULT[field]
 
 
 def test_hierarchical_reduction_combines_every_intermediate_note(monkeypatch):
@@ -67,12 +80,16 @@ def test_hierarchical_reduction_combines_every_intermediate_note(monkeypatch):
         return reply('Ключевые факты.')
     mock_yandex(monkeypatch, handler)
     source = 'Начальный материал. ' * 50
-    result = asyncio.run(main.generate(source))
+    async def prepare():
+        async with httpx.AsyncClient() as client:
+            return await llm.prepare_text(client, source, key='test-key', folder='test-folder')
+    result = asyncio.run(prepare())
     initial_chunks = original_split(source, 80)
     assert ''.join(levels[:len(initial_chunks)]) == source
     assert len(levels) > len(initial_chunks)
     assert 'Ключевые факты.' in levels[len(initial_chunks)]
-    assert result.title == RESULT['title']
+    assert len(result) <= 100
+    assert 'Ключевые факты.' in result
 
 
 def test_extraction_no_longer_rejects_45000_characters():
@@ -115,6 +132,9 @@ def test_excessively_long_notes_fail_without_reduction_loop(monkeypatch):
         calls.append(request)
         return reply('x' * (llm.MAX_NOTE_CHARS + 1))
     mock_yandex(monkeypatch, handler)
+    async def prepare():
+        async with httpx.AsyncClient() as client:
+            return await llm.prepare_text(client, 'x' * 60000, key='test-key', folder='test-folder')
     with pytest.raises(HTTPException) as error:
-        asyncio.run(main.generate('x' * 60000))
+        asyncio.run(prepare())
     assert error.value.status_code == 502 and len(calls) == 1
