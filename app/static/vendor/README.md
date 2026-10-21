@@ -9,3 +9,5 @@ Vendored distribution assets from the npm registry; no Node.js or CDN is require
 KaTeX renders mathematics with trust disabled. Mermaid runs in strict mode; generated SVG is additionally sanitized with DOMPurify. Fonts are served locally. Each package's license is included alongside its assets.
 
 Distribution files are preserved byte-for-byte, including upstream whitespace and embedded license notices. Minified JavaScript bundles are marked as non-text diffs in .gitattributes; application source remains reviewable normally.
+
+- markdown-it 15.0.3: npm tarball integrity `sha512-+Az7Ojz3iRGu8KYMvJ6xVhvrxP3eE+vEtJX75Ow88XBpcQNV/0lGX5ZynIIBftREo4DC2jsveAMDaeltmm8QvQ==`; unmodified `dist/browser/markdown-it.umd.min.js` and license.

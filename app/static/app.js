@@ -130,7 +130,7 @@ function render(data) {
   renderSummary($('summary'), data.summary);
   $('summary').append(node('h3', 'Главные мысли для повторения'));
   const list = node('ul');
-  data.key_points.forEach(point => list.append(node('li', point)));
+  data.key_points.forEach(point => list.append(richNode('li', point)));
   $('summary').append(list);
   renderCardActivities(data.cards);
   renderQuiz(data);
@@ -151,13 +151,13 @@ function renderQuiz(data) {
   const sections = [];
   data.quiz.forEach((question, index) => {
     const section = node('fieldset', null, 'question');
-    section.append(node('legend', `${index + 1}. ${question.question}`));
+    section.append(richNode('legend', `${index + 1}. ${question.question}`));
     question.options.forEach((option, choice) => {
       const label = node('label', null, 'quiz-choice');
       const input = node('input');
       input.type = 'radio'; input.name = `question-${index}`; input.value = choice; input.required = true;
       input.onchange = () => answers[index] = choice;
-      label.append(input, document.createTextNode(option));
+      label.append(input, richNode('span', option));
       section.append(label);
     });
     sections.push(section);
@@ -175,7 +175,7 @@ function renderQuiz(data) {
       feedback.textContent = `Результат: ${result.score} из ${result.total}. Сохранён для преподавателя.`;
       result.feedback.forEach((item, index) => {
         sections[index].disabled = true;
-        sections[index].append(node('p', `Правильный ответ: ${data.quiz[index].options[item.answer]}\n${item.explanation}`, 'feedback'));
+        sections[index].append(richNode('p', `Правильный ответ: ${data.quiz[index].options[item.answer]}\n${item.explanation}`, 'feedback'));
       });
       typesetMath($('quiz'));
     } catch (error) { feedback.textContent = error.message; submit.disabled = false; }
@@ -434,7 +434,7 @@ function renderMatchingGame(root, cards) {
         button.classList.toggle('mismatch', mismatch && selected);
         button.classList.toggle('matched', solved);
         const value = button.classList.contains('match-term') ? cards[id].term : cards[id].explanation;
-        button.textContent = solved ? `✓ ${value}` : value;
+        formatInline(button, solved ? `✓ ${value}` : value);
       });
     }
   }
@@ -456,8 +456,8 @@ function renderMatchingGame(root, cards) {
     } else feedback.textContent = term !== null ? 'Теперь выбери объяснение.' : explanation !== null ? 'Теперь выбери термин.' : 'Выбери первую пару.';
     paint();
     if (mismatch) {
-      termButtons.get(term).textContent = 'Не совпало: ' + cards[term].term;
-      explanationButtons.get(explanation).textContent = 'Не совпало: ' + cards[explanation].explanation;
+      formatInline(termButtons.get(term), 'Не совпало: ' + cards[term].term);
+      formatInline(explanationButtons.get(explanation), 'Не совпало: ' + cards[explanation].explanation);
     }
     typesetMath(root);
     if (event.detail === 0 && term === null && explanation === null && !mismatch) {
@@ -490,7 +490,7 @@ function renderCardReview(root, cards) {
     const card = deck[index];
     counter.textContent = `Карточка ${index + 1} из ${deck.length}`;
     const caption = node('span', flipped ? 'ОБЪЯСНЕНИЕ' : 'ТЕРМИН', 'flip-caption');
-    const body = node('span', flipped ? card.explanation : card.term, 'flip-text');
+    const body = richNode('span', flipped ? card.explanation : card.term, 'flip-text');
     flip.replaceChildren(caption, body);
     flip.setAttribute('aria-pressed', String(flipped));
     flip.classList.toggle('is-flipped', flipped);
@@ -508,4 +508,16 @@ function renderCardReview(root, cards) {
 
 function typesetMath(root) {
   window.StudyPresentation?.math(root);
+}
+
+
+function formatInline(container, text) {
+  if (window.StudyPresentation) window.StudyPresentation.inline(container, text);
+  else container.textContent = text;
+}
+
+function richNode(tag, text, className) {
+  const result = node(tag, undefined, className);
+  formatInline(result, text);
+  return result;
 }
