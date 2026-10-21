@@ -20,7 +20,12 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(150))
     password: Mapped[str] = mapped_column(Text)
     role: Mapped[str] = mapped_column(String(20))
-    group_id: Mapped[int] = mapped_column(ForeignKey('groups.id'))
+    group_id: Mapped[int | None] = mapped_column(ForeignKey('groups.id'), nullable=True)
+
+class TeacherGroup(Base):
+    __tablename__ = 'teacher_groups'
+    teacher_id: Mapped[int] = mapped_column(ForeignKey('users.id'), primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey('groups.id'), primary_key=True)
 
 class LoginSession(Base):
     __tablename__ = 'sessions'
@@ -36,6 +41,7 @@ class Material(Base):
     title: Mapped[str] = mapped_column(String(300))
     content: Mapped[str] = mapped_column(Text)
     published: Mapped[bool] = mapped_column(default=False)
+    quiz_revision: Mapped[int] = mapped_column(default=1, server_default='1')
 
 class View(Base):
     __tablename__ = 'views'
@@ -52,6 +58,7 @@ class Attempt(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     material_id: Mapped[int] = mapped_column(ForeignKey('materials.id'))
     user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    quiz_revision: Mapped[int] = mapped_column(default=1, server_default='1')
     score: Mapped[int] = mapped_column(Integer)
     total: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[str] = mapped_column(String(40))
@@ -69,7 +76,25 @@ if url.startswith('sqlite'):
 Session = sessionmaker(engine, expire_on_commit=False)
 
 def init_db():
-    Base.metadata.create_all(engine)
+    from alembic import command
+    from alembic.config import Config
+    config = Config()
+    config.set_main_option('script_location', str(Path(__file__).resolve().parent.parent / 'migrations'))
+    # Preserve an existing SQLite database before the first structural migration.
+    if engine.dialect.name == 'sqlite' and engine.url.database not in (None, '', ':memory:'):
+        import sqlite3
+        database = Path(engine.url.database)
+        with engine.connect() as connection:
+            from sqlalchemy import inspect
+            tables = inspect(connection).get_table_names()
+        if 'users' in tables and 'alembic_version' not in tables:
+            backup = database.with_name(database.name + '.before-groups-migration.bak')
+            if not backup.exists():
+                with sqlite3.connect(database) as source, sqlite3.connect(backup) as target:
+                    source.backup(target)
+    with engine.connect() as connection:
+        config.attributes['connection'] = connection
+        command.upgrade(config, 'head')
 
 def db():
     with Session() as session:

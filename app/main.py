@@ -2,21 +2,22 @@ import io
 import json
 import os
 from pathlib import Path
+from typing import Annotated
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from .store import db, init_db, Material, User, View, Attempt
-from .auth import router as auth_router, current_user, teacher
+from .store import db, init_db, Material, User, View, Attempt, TeacherGroup, Group
+from .auth import router as auth_router, current_user, teacher, require_group, teacher_groups
 
 import httpx
 from docx import Document
-from fastapi import FastAPI, File, HTTPException, UploadFile, Depends, Request
+from fastapi import FastAPI, File, HTTPException, UploadFile, Depends, Request, Form
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, ConfigDict, StrictInt
 from pypdf import PdfReader
 
 ROOT = Path(__file__).parent
@@ -29,6 +30,8 @@ async def lifespan(app):
 
 app = FastAPI(title="Суть — учебный помощник", lifespan=lifespan)
 app.include_router(auth_router)
+from .admin import router as admin_router
+app.include_router(admin_router)
 
 @app.middleware('http')
 async def csrf_guard(request: Request, call_next):
@@ -51,9 +54,10 @@ class Card(BaseModel):
 
 
 class Question(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
     question: str = Field(min_length=1, max_length=2000)
-    options: list[str] = Field(min_length=4, max_length=4)
-    answer: int = Field(ge=0, le=3)
+    options: list[Annotated[str, Field(min_length=1, max_length=2000)]] = Field(min_length=4, max_length=4)
+    answer: StrictInt = Field(ge=0, le=3)
     explanation: str = Field(min_length=1, max_length=3000)
 
 
@@ -142,7 +146,8 @@ async def health():
 
 
 @app.post('/api/material')
-async def material(file: UploadFile = File(...), user: User = Depends(teacher), session: Session = Depends(db)):
+async def material(file: UploadFile = File(...), group_id: int = Form(...), user: User = Depends(teacher), session: Session = Depends(db)):
+    require_group(user, group_id, session)
     try:
         data = await file.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES:
@@ -151,11 +156,13 @@ async def material(file: UploadFile = File(...), user: User = Depends(teacher), 
     finally:
         await file.close()
     generated = await generate(text)
-    record = Material(teacher_id=user.id, group_id=user.group_id, title=generated.title,
+    session.expire_all()
+    require_group(user, group_id, session)
+    record = Material(teacher_id=user.id, group_id=group_id, title=generated.title,
                       content=generated.model_dump_json(), published=False)
     session.add(record)
     session.commit()
-    return material_payload(record, user)
+    return material_payload(record, user, session)
 
 
 
@@ -165,33 +172,38 @@ def timestamp():
 
 def visible_material(material_id, user, session):
     record = session.get(Material, material_id)
-    if not record or (user.role == 'teacher' and record.teacher_id != user.id) or (
+    if user.role not in {'teacher', 'student'}:
+        raise HTTPException(403, 'Материалы доступны преподавателям и студентам.')
+    if not record or (user.role == 'teacher' and (record.teacher_id != user.id or not session.get(TeacherGroup, (user.id, record.group_id)))) or (
         user.role == 'student' and (not record.published or record.group_id != user.group_id)
     ):
         raise HTTPException(404, 'Материал не найден.')
     return record
 
 
-def material_payload(record, user):
+def material_payload(record, user, session):
     content = json.loads(record.content)
     if user.role == 'student':
         content['quiz'] = [{'question': q['question'], 'options': q['options']} for q in content['quiz']]
-    return dict(id=record.id, published=record.published, **content)
+    return dict(id=record.id, teacher_name=session.get(User, record.teacher_id).name, group_name=session.get(Group, record.group_id).name, group_id=record.group_id, quiz_revision=record.quiz_revision, published=record.published, **content)
 
 
 @app.get('/api/materials')
 def list_materials(user: User = Depends(current_user), session: Session = Depends(db)):
     query = select(Material)
     if user.role == 'teacher':
-        query = query.where(Material.teacher_id == user.id)
-    else:
+        query = query.where(Material.teacher_id == user.id, Material.group_id.in_(select(TeacherGroup.group_id).where(TeacherGroup.teacher_id == user.id)))
+    elif user.role == 'student':
         query = query.where(Material.group_id == user.group_id, Material.published.is_(True))
-    return [dict(id=m.id, title=m.title, published=m.published) for m in session.scalars(query.order_by(Material.id.desc()))]
+    else:
+        raise HTTPException(403, 'Материалы доступны преподавателям и студентам.')
+    rows = session.execute(query.add_columns(User.name, Group.name).join(User, User.id == Material.teacher_id).join(Group, Group.id == Material.group_id).order_by(Material.id.desc()))
+    return [dict(id=m.id, title=m.title, group_id=m.group_id, group_name=group_name, teacher_name=teacher_name, published=m.published) for m, teacher_name, group_name in rows]
 
 
 @app.get('/api/materials/{material_id}')
 def get_material(material_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
-    return material_payload(visible_material(material_id, user, session), user)
+    return material_payload(visible_material(material_id, user, session), user, session)
 
 
 @app.post('/api/materials/{material_id}/view')
@@ -220,13 +232,16 @@ class Publication(BaseModel):
 @app.patch('/api/materials/{material_id}')
 def publish(material_id: int, data: Publication, user: User = Depends(teacher), session: Session = Depends(db)):
     record = visible_material(material_id, user, session)
+    if data.published and not json.loads(record.content)['quiz']:
+        raise HTTPException(422, 'Добавьте хотя бы один вопрос перед публикацией.')
     record.published = data.published
     session.commit()
     return {'id': record.id, 'published': record.published}
 
 
 class Submission(BaseModel):
-    answers: list[int] = Field(min_length=1, max_length=10)
+    answers: list[StrictInt] = Field(min_length=1, max_length=50)
+    quiz_revision: int = Field(ge=1)
 
 
 @app.post('/api/materials/{material_id}/attempts')
@@ -234,11 +249,13 @@ def submit_quiz(material_id: int, data: Submission, user: User = Depends(current
     record = visible_material(material_id, user, session)
     if user.role != 'student':
         raise HTTPException(403, 'Тест с сохранением результата доступен студентам.')
+    if data.quiz_revision != record.quiz_revision:
+        raise HTTPException(409, 'Преподаватель изменил тест. Обновите страницу.')
     quiz = json.loads(record.content)['quiz']
     if len(data.answers) != len(quiz) or any(a < 0 or a > 3 for a in data.answers):
         raise HTTPException(422, 'Ответьте на каждый вопрос, выбрав один вариант.')
     score = sum(a == q['answer'] for a, q in zip(data.answers, quiz))
-    session.add(Attempt(material_id=record.id, user_id=user.id, score=score, total=len(quiz), created_at=timestamp()))
+    session.add(Attempt(material_id=record.id, user_id=user.id, score=score, total=len(quiz), quiz_revision=record.quiz_revision, created_at=timestamp()))
     session.commit()
     return {'score': score, 'total': len(quiz), 'feedback': [
         {'answer': q['answer'], 'explanation': q['explanation']} for q in quiz
@@ -265,5 +282,38 @@ def stats(material_id: int, user: User = Depends(teacher), session: Session = De
                        'views': view.count if view else 0,
                        'attempts': len(history),
                        'last_score': last.score if last else None,
-                       'total': last.total if last else None})
+                       'total': last.total if last else None,
+                       'last_quiz_revision': last.quiz_revision if last else None,
+                       'current_quiz_revision': record.quiz_revision})
     return result
+
+
+@app.get('/api/groups')
+def assigned_groups(user: User = Depends(teacher), session: Session = Depends(db)):
+    return [{'id': group.id, 'name': group.name, 'invite_code': group.invite}
+            for group in teacher_groups(user, session)]
+
+
+class QuizUpdate(BaseModel):
+    quiz: list[Question] = Field(max_length=50)
+    quiz_revision: int = Field(ge=1)
+
+
+@app.put('/api/materials/{material_id}/quiz')
+def update_quiz(material_id: int, data: QuizUpdate, user: User = Depends(teacher), session: Session = Depends(db)):
+    record = visible_material(material_id, user, session)
+    if record.quiz_revision != data.quiz_revision:
+        raise HTTPException(409, 'Тест уже изменён. Обновите страницу перед редактированием.')
+    content = json.loads(record.content)
+    updated = [q.model_dump() for q in data.quiz]
+    if content['quiz'] != updated:
+        content['quiz'] = updated
+        result = session.execute(update(Material).where(Material.id == record.id, Material.quiz_revision == data.quiz_revision)
+                                 .values(content=json.dumps(content, ensure_ascii=False), published=False,
+                                         quiz_revision=Material.quiz_revision + 1))
+        if result.rowcount != 1:
+            session.rollback()
+            raise HTTPException(409, 'Тест уже изменён. Обновите страницу.')
+        session.commit()
+        session.refresh(record)
+    return material_payload(record, user, session)

@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from .store import db, User, Group, LoginSession
+from .store import db, User, Group, LoginSession, TeacherGroup
 
 router = APIRouter(prefix='/api/auth')
 COOKIE = 'study_session'
@@ -40,11 +40,30 @@ def teacher(user: User = Depends(current_user)):
         raise HTTPException(403, 'Доступно только преподавателю.')
     return user
 
+def admin(user: User = Depends(current_user)):
+    if user.role != 'admin':
+        raise HTTPException(403, 'Доступно только администратору.')
+    return user
+
+
+def teacher_groups(user, session):
+    return session.scalars(select(Group).join(TeacherGroup, TeacherGroup.group_id == Group.id)
+                           .where(TeacherGroup.teacher_id == user.id).order_by(Group.name, Group.id)).all()
+
+
+def require_group(user, group_id, session):
+    if not session.get(TeacherGroup, (user.id, group_id)):
+        raise HTTPException(403, 'Преподаватель не назначен в эту группу.')
+
+
 def public_user(user, session):
-    group = session.get(Group, user.group_id)
-    result = dict(id=user.id, username=user.username, name=user.name, role=user.role, group=group.name)
+    result = dict(id=user.id, username=user.username, name=user.name, role=user.role)
+    if user.role == 'student':
+        group = session.get(Group, user.group_id)
+        result['group'] = group.name if group else None
     if user.role == 'teacher':
-        result['invite_code'] = group.invite
+        result['groups'] = [{'id': group.id, 'name': group.name, 'invite_code': group.invite}
+                            for group in teacher_groups(user, session)]
     return result
 
 class Credentials(BaseModel):

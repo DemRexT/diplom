@@ -1,9 +1,10 @@
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from app.main import app
 from app import main
 from app.auth import hash_password, verify_password
-from app.store import Group, User, LoginSession, View
+from app.store import Group, User, LoginSession, View, TeacherGroup
 from test_app import RESULT, TEXT
 
 PASSWORD = 'safe-test-password'
@@ -17,7 +18,10 @@ def accounts(database):
         session.add_all([group, other])
         session.flush()
         for username, role, gid in [('teacher', 'teacher', group.id), ('otherteacher', 'teacher', other.id)]:
-            session.add(User(username=username, name=username, role=role, group_id=gid, password=hash_password(PASSWORD)))
+            user = User(username=username, name=username, role=role, group_id=None, password=hash_password(PASSWORD))
+            session.add(user)
+            session.flush()
+            session.add(TeacherGroup(teacher_id=user.id, group_id=gid))
         session.commit()
 
 
@@ -46,7 +50,7 @@ def test_complete_learning_workflow(database, monkeypatch):
     async def fake(text):
         return main.StudyMaterial.model_validate(RESULT)
     monkeypatch.setattr(main, 'generate', fake)
-    r = teacher.post('/api/material', files={'file': ('lecture.txt', TEXT.encode())})
+    r = teacher.post('/api/material', data={'group_id': '1'}, files={'file': ('lecture.txt', TEXT.encode())})
     assert r.status_code == 200
     mid = r.json()['id']
     path = f'/api/materials/{mid}'
@@ -56,17 +60,20 @@ def test_complete_learning_workflow(database, monkeypatch):
     assert TestClient(app).get(path).status_code == 401
     assert learner.get('/api/materials').json() == []
     assert learner.get(path).status_code == 404
-    assert learner.post('/api/material', files={'file': ('a.txt', TEXT.encode())}).status_code == 403
+    assert learner.post('/api/material', data={'group_id': '1'}, files={'file': ('a.txt', TEXT.encode())}).status_code == 403
     assert learner.patch(path, json={'published': True}).status_code == 403
     assert teacher.patch(path, json={'published': True}).status_code == 200
-    assert len(learner.get('/api/materials').json()) == 1
+    library = learner.get('/api/materials').json()
+    assert len(library) == 1
+    assert library[0]['teacher_name'] == 'teacher'
+    assert library[0]['group_name'] == 'Группа 1'
     assert learner.get(f'/materials/{mid}').status_code == 200
     content = learner.get(path).json()
     assert 'answer' not in content['quiz'][0]
     assert 'explanation' not in content['quiz'][0]
     assert outsider.get(path).status_code == 404
     assert outsider.post(path + '/view').status_code == 404
-    assert outsider.post(path + '/attempts', json={'answers': [0]}).status_code == 404
+    assert outsider.post(path + '/attempts', json={'quiz_revision': 1, 'answers': [0]}).status_code == 404
     assert other_teacher.get(path + '/stats').status_code == 404
     assert other_teacher.patch(path, json={'published': False}).status_code == 404
     assert learner.get(path + '/stats').status_code == 403
@@ -74,10 +81,10 @@ def test_complete_learning_workflow(database, monkeypatch):
     assert stats[0]['views'] == 0  # GET does not record engagement
     assert learner.post(path + '/view').status_code == 200
     assert learner.post(path + '/view').status_code == 200
-    assert learner.post(path + '/attempts', json={'answers': [5]}).status_code == 422
-    result = learner.post(path + '/attempts', json={'answers': [0]}).json()
+    assert learner.post(path + '/attempts', json={'quiz_revision': 1, 'answers': [5]}).status_code == 422
+    result = learner.post(path + '/attempts', json={'quiz_revision': 1, 'answers': [0]}).json()
     assert result['score'] == 1
-    result = learner.post(path + '/attempts', json={'answers': [1]}).json()
+    result = learner.post(path + '/attempts', json={'quiz_revision': 1, 'answers': [1]}).json()
     assert result['score'] == 0
     stats = teacher.get(path + '/stats').json()
     assert len(stats) == 1
@@ -86,7 +93,7 @@ def test_complete_learning_workflow(database, monkeypatch):
     assert stats[0]['last_score'] == 0
     assert teacher.patch(path, json={'published': False}).status_code == 200
     assert learner.get(path).status_code == 404
-    assert learner.post(path + '/attempts', json={'answers': [0]}).status_code == 404
+    assert learner.post(path + '/attempts', json={'quiz_revision': 1, 'answers': [0]}).status_code == 404
 
 
 def test_sessions_and_registration(database):
@@ -126,17 +133,19 @@ def test_csrf(database):
     assert client.post('/api/auth/login', json={'username': 'teacher', 'password': PASSWORD}).status_code == 403
 
 
-def test_admin_provisions_teacher(database, monkeypatch, capsys):
+@pytest.mark.parametrize('role', ['teacher', 'admin'])
+def test_cli_provisions_privileged_account(database, monkeypatch, capsys, role):
     import sys
     from app import manage
     monkeypatch.setattr(manage, 'init_db', lambda: None)
     monkeypatch.setattr(manage, 'Session', database)
-    monkeypatch.setattr(sys, 'argv', ['manage', 'lecturer', '--name', 'Преподаватель', '--group', 'ИВТ-41'])
+    monkeypatch.setattr(sys, 'argv', ['manage', 'lecturer', '--name', 'Преподаватель', '--role', role])
     monkeypatch.setattr(manage.getpass, 'getpass', lambda _: PASSWORD)
     manage.main()
     output = capsys.readouterr().out
     assert PASSWORD not in output
     with database() as session:
         teacher = session.scalar(select(User).where(User.username == 'lecturer'))
-        assert teacher.role == 'teacher' and verify_password(PASSWORD, teacher.password)
-        assert session.get(Group, teacher.group_id).invite in output
+        assert teacher.role == role and verify_password(PASSWORD, teacher.password)
+        assert teacher.group_id is None
+        assert not session.scalars(select(TeacherGroup).where(TeacherGroup.teacher_id == teacher.id)).all()

@@ -1,7 +1,7 @@
 import io
 import pytest
 from app.auth import teacher
-from app.store import User, Group
+from app.store import User, Group, TeacherGroup
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -16,6 +16,8 @@ def client(database):
         session.flush()
         user = User(username='teacher', name='Teacher', role='teacher', password='unused', group_id=group.id)
         session.add(user)
+        session.flush()
+        session.add(TeacherGroup(teacher_id=user.id, group_id=group.id))
         session.commit()
     main.app.dependency_overrides[teacher] = lambda: user
     return TestClient(main.app, headers={'X-Study-Request': '1'})
@@ -46,7 +48,7 @@ def test_upload_calls_generator(monkeypatch, client):
         assert text == TEXT.strip()
         return main.StudyMaterial.model_validate(RESULT)
     monkeypatch.setattr(main, 'generate', fake)
-    r = client.post('/api/material', files={'file': ('lecture.txt', TEXT.encode())})
+    r = client.post('/api/material', data={'group_id': '1'}, files={'file': ('lecture.txt', TEXT.encode())})
     assert r.status_code == 200
     assert {k: r.json()[k] for k in RESULT} == RESULT
     assert r.json()['published'] is False
@@ -55,13 +57,13 @@ def test_upload_calls_generator(monkeypatch, client):
 
 def test_missing_key(monkeypatch, client):
     monkeypatch.delenv('YANDEX_API_KEY', raising=False)
-    assert client.post('/api/material', files={'file': ('a.txt', TEXT.encode())}).status_code == 503
+    assert client.post('/api/material', data={'group_id': '1'}, files={'file': ('a.txt', TEXT.encode())}).status_code == 503
 
 
 def test_invalid_files(client):
     for name, data, expected in [('a.exe', b'x', 415), ('a.pdf', b'bad pdf', 422),
                                   ('a.txt', b'tiny', 422), ('a.txt', b'x' * (10 * 1024 * 1024 + 1), 413)]:
-        assert client.post('/api/material', files={'file': (name, data)}).status_code == expected
+        assert client.post('/api/material', data={'group_id': '1'}, files={'file': (name, data)}).status_code == expected
 
 
 def test_yandex_contract(monkeypatch):
