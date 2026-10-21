@@ -230,7 +230,7 @@ $('upload').onsubmit = async event => {
   if (!$('target-group').value) { $('status').textContent = 'Администратор должен назначить вам группу.'; return; }
   const version = generation;
   $('submit').disabled = true;
-  $('status').textContent = 'Читаем материал и готовим задания… Для сканов распознавание может занять до пяти минут.';
+  $('status').textContent = 'Читаем материал и готовим задания… Большие тексты обрабатываются по частям. Для сканов OCR может занять до пяти минут, затем потребуется время на нейросеть.';
   const form = new FormData(); form.append('file', file); form.append('group_id', $('target-group').value);
   try {
     const data = await api('/api/material', {method: 'POST', body: form});

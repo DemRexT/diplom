@@ -20,11 +20,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, ConfigDict, StrictInt
 from pypdf import PdfReader
 from .ocr import recognize_pages
+from .llm import complete, prepare_text
 from starlette.concurrency import run_in_threadpool
 
 ROOT = Path(__file__).parent
 MAX_BYTES = 10 * 1024 * 1024
-MAX_TEXT = 45000
 @asynccontextmanager
 async def lifespan(app):
     init_db()
@@ -104,8 +104,6 @@ def extract_text(filename: str, data: bytes) -> str:
     text = text.strip()
     if len(text) < 100:
         raise HTTPException(422, 'Недостаточно текста. Проверьте читаемость документа и качество сканов.')
-    if len(text) > MAX_TEXT:
-        raise HTTPException(413, 'Материал слишком большой: максимум 45 000 символов. Загрузите отдельную главу.')
     return text
 
 
@@ -124,17 +122,9 @@ quiz (5 объектов question, options: ровно 4 строки, answer: �
 explanation: объяснение по тексту). Проверяй понимание, избегай неоднозначных вопросов.'''
     try:
         async with httpx.AsyncClient(timeout=90) as client:
-            response = await client.post(
-                'https://llm.api.cloud.yandex.net/foundationModels/v1/completion',
-                headers={'Authorization': f'Api-Key {key}'},
-                json={'modelUri': f"gpt://{folder}/{os.getenv('YANDEX_MODEL', 'yandexgpt/latest')}",
-                      'completionOptions': {'stream': False, 'temperature': 0.2, 'maxTokens': '6000'},
-                      'messages': [{'role': 'system', 'text': system},
-                                   {'role': 'user', 'text': text}],
-                      'jsonObject': True},
-            )
-            response.raise_for_status()
-            content = response.json()['result']['alternatives'][0]['message']['text']
+            prepared = await prepare_text(client, text, key=key, folder=folder)
+            content = await complete(client, system, prepared, key=key, folder=folder,
+                                     structured=True, max_tokens=6000)
             return StudyMaterial.model_validate(json.loads(content))
     except httpx.TimeoutException:
         raise HTTPException(504, 'Нейросеть не ответила вовремя. Попробуйте ещё раз.')
