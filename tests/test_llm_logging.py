@@ -28,7 +28,7 @@ def test_provider_error_logs_reason_and_request_id_without_credentials(monkeypat
     assert f'HTTP {status}' in caplog.text
     assert 'Invalid model parameters' in caplog.text
     assert 'request-123' in caplog.text
-    assert 'конспект, карточки и тест' in caplog.text
+    assert 'суть методички и тест' in caplog.text
     assert 'test-key' not in caplog.text
     assert 'PRIVATE_DOCUMENT_CONTENT' not in caplog.text
     assert 'Authorization' not in caplog.text
@@ -87,11 +87,11 @@ def test_non_json_provider_error_does_not_dump_html(monkeypatch, caplog):
 def test_progress_identifies_document_section_and_final_stage(monkeypatch, caplog):
     def handler(request):
         body = json.loads(request.content)
-        return reply(json.dumps(RESULT) if body.get('jsonObject') else 'Подробное объяснение.')
+        return reply(json.dumps(RESULT) if body.get('jsonObject') else 'Опорные заметки.')
     mock_yandex(monkeypatch, handler)
     with caplog.at_level(logging.INFO, logger='uvicorn.error'):
-        asyncio.run(main.generate('PRIVATE_SOURCE_CONTENT ' * 1000))
-    assert 'конспект раздела 1/2' in caplog.text
-    assert 'конспект раздела 2/2' in caplog.text
-    assert 'сборка карточек и теста' in caplog.text
+        asyncio.run(main.generate('PRIVATE_SOURCE_CONTENT ' * 2000))
+    assert 'фрагмент 1/3' in caplog.text
+    assert 'фрагмент 3/3' in caplog.text
+    assert 'суть методички и тест' in caplog.text
     assert 'PRIVATE_SOURCE_CONTENT' not in caplog.text

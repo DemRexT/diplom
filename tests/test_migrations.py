@@ -55,6 +55,6 @@ def test_fresh_database_migration_repeatable(tmp_path, monkeypatch):
     store.init_db()
     store.init_db()
     with engine.connect() as connection:
-        assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar() == '001_groups_and_quiz'
+        assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar() == '002_material_questions'
         assert connection.execute(text('SELECT COUNT(*) FROM teacher_groups')).scalar() == 0
     engine.dispose()

@@ -23,8 +23,6 @@ def client(database):
     return TestClient(main.app, headers={'X-Study-Request': '1'})
 TEXT = 'Учебный материал о базах данных и нормализации. ' * 10
 RESULT = {'title': 'Базы данных', 'summary': 'Нормализация уменьшает избыточность.',
-          'key_points': ['Данные организованы в таблицы.'],
-          'cards': [{'term': 'Таблица', 'explanation': 'Строки и столбцы.'}],
           'quiz': [{'question': 'Где хранятся строки?', 'options': ['В таблице', 'В шрифте', 'В цвете', 'В поле зрения'],
                     'answer': 0, 'explanation': 'Таблица состоит из строк.'}]}
 
@@ -51,6 +49,7 @@ def test_upload_calls_generator(monkeypatch, client):
     r = client.post('/api/material', data={'group_id': '1'}, files={'file': ('lecture.txt', TEXT.encode())})
     assert r.status_code == 200
     assert {k: r.json()[k] for k in RESULT} == RESULT
+    assert r.json()['source'] == TEXT.strip()
     assert r.json()['published'] is False
     assert r.json()['id'] > 0
 
@@ -79,9 +78,7 @@ def test_yandex_contract(monkeypatch):
         assert request.url.host == 'llm.api.cloud.yandex.net'
         assert request.headers['Authorization'] == 'Api-Key test-key'
         assert body['modelUri'] == 'gpt://test-folder/yandexgpt/latest'
-        assert body['messages'][1]['text'] == TEXT
-        if '[THEORY_ACTIVITIES]' in body['messages'][0]['text']:
-            return httpx.Response(200, json={'result': {'alternatives': [{'message': {'text': json.dumps({'labs': [], 'challenges': []})}}]}})
+        assert '<<<\n' + TEXT + '\n>>>' in body['messages'][1]['text']
         return httpx.Response(200, json={'result': {'alternatives': [
             {'message': {'text': json.dumps(RESULT)}}]}})
 

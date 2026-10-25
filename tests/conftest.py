@@ -4,6 +4,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from app.main import app
 from app.store import Base, db
+from app import limits
 
 @pytest.fixture
 def database():
@@ -17,3 +18,10 @@ def database():
     yield factory
     app.dependency_overrides.clear()
     engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def fresh_limits():
+    limits.reset_all()
+    yield
+    limits.reset_all()

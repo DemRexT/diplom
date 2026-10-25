@@ -29,13 +29,24 @@ async function api(path, options = {}) {
     ...options,
     headers: {'X-Study-Request': '1', ...options.headers},
   });
-  const data = await response.json();
+  const data = await readJson(response);
   if (!response.ok) {
     if (response.status === 401 && user) setUser(null);
-    throw new Error(typeof data.detail === 'string' ? data.detail : 'Проверьте заполненные поля.');
+    throw new Error(errorMessage(response, data, 'Проверьте заполненные поля.'));
   }
   return data;
 }
+async function readJson(response) {
+  // A proxy or server crash may answer with HTML or an empty body instead of JSON.
+  try { return await response.json(); } catch (_) { return null; }
+}
+function errorMessage(response, data, fallback) {
+  if (typeof data?.detail === 'string') return data.detail;
+  if (response.status === 413) return 'Файл слишком большой для сервера.';
+  if (response.status >= 500) return 'Сервер временно недоступен. Попробуйте ещё раз через минуту.';
+  return fallback;
+}
+const date = value => value ? new Date(value).toLocaleString('ru-RU') : '—';
 function json(method, body) {
   return {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)};
 }
@@ -58,7 +69,7 @@ function setUser(value) {
   $('result').hidden = true;
   $('library').replaceChildren();
   $('statistics').replaceChildren();
-  ['summary', 'cards', 'quiz', 'admin-groups', 'admin-group', 'admin-teacher'].forEach(id => $(id).replaceChildren());
+  ['source', 'summary', 'ask', 'quiz', 'admin-groups', 'admin-group', 'admin-teacher'].forEach(id => $(id).replaceChildren());
   $('create-teacher').reset();
   $('material-url').value = '';
   $('title').textContent = '';
@@ -85,8 +96,10 @@ async function refreshLibrary() {
   $('library').replaceChildren();
   $('library-empty').hidden = materials.length !== 0;
   for (const material of materials) {
-    const button = node('a', material.title + ` · Преподаватель: ${material.teacher_name} · ${material.group_name}` + (user.role === 'teacher' ? (material.published ? ' · Опубликован' : ' · Черновик') : ''), 'library-item');
+    const button = node('a', null, 'library-item');
     button.href = `/materials/${material.id}`;
+    button.append(node('strong', material.title), node('span', `${material.teacher_name} · ${material.group_name}`, 'library-meta'));
+    if (user.role === 'teacher') button.append(node('span', material.published ? 'Опубликован' : 'Черновик', material.published ? 'chip chip-live' : 'chip'));
     $('library').append(button);
   }
 }
@@ -117,35 +130,127 @@ $('file').onchange = () => {
   $('submit').disabled = !file;
 };
 document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => {
-  document.querySelectorAll('[data-tab]').forEach(other => other.classList.toggle('active', other === button));
-  ['summary', 'cards', 'quiz'].forEach(id => $(id).hidden = id !== button.dataset.tab);
+  document.querySelectorAll('[data-tab]').forEach(other => {
+    other.classList.toggle('active', other === button);
+    other.setAttribute('aria-selected', String(other === button));
+    other.tabIndex = other === button ? 0 : -1;
+  });
+  ['source', 'summary', 'ask', 'quiz'].forEach(id => $(id).hidden = id !== button.dataset.tab);
   window.StudyPresentation?.enhance($(button.dataset.tab));
 });
-function render(data, preview = false) {
-  selected = preview ? null : data;
-  $('material-url').parentElement.hidden = preview;
-  $('preview-status').hidden = !preview;
-  if (preview) $('preview-status').textContent = 'Предпросмотр: конспект готов. Создаём интерактив; материал пока не сохранён.';
-  $('material-url').value = preview ? '' : new URL(`/materials/${data.id}`, window.location.origin).href;
+function render(data) {
+  selected = data;
+  $('material-url').value = new URL(`/materials/${data.id}`, window.location.origin).href;
   $('title').textContent = data.title;
   $('material-author').textContent = `Преподаватель: ${data.teacher_name} · Группа: ${data.group_name}`;
   $('statistics').hidden = true;
-  $('teacher-actions').hidden = preview || user.role !== 'teacher';
+  $('teacher-actions').hidden = user.role !== 'teacher';
   $('publish').textContent = data.published ? 'Снять с публикации' : 'Опубликовать для группы';
+  setStatusChip(data.published);
+  renderSource(data);
   $('summary').replaceChildren();
   renderSummary($('summary'), data.summary);
-  window.StudyLabs?.render($('summary'), data.labs, data.challenges, data.modules);
-  $('summary').append(node('h3', 'Главные мысли для повторения'));
-  const list = node('ul');
-  data.key_points.forEach(point => list.append(richNode('li', point)));
-  $('summary').append(list);
-  renderCardActivities(data.cards);
+  renderAsk(data);
   renderQuiz(data);
-  if (preview) $('quiz').querySelectorAll('button,input,textarea,select').forEach(control => { control.disabled = true; });
   $('result').hidden = false;
   typesetMath($('result'));
   document.querySelector('[data-tab="summary"]').click();
   $('result').scrollIntoView({behavior: 'smooth'});
+}
+function setStatusChip(published) {
+  $('material-status').hidden = user.role !== 'teacher';
+  $('material-status').textContent = published ? 'Опубликован для группы' : 'Черновик — студенты не видят';
+  $('material-status').classList.toggle('chip-live', !!published);
+}
+document.querySelector('[role=tablist]').addEventListener('keydown', event => {
+  if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+  const tabs = [...document.querySelectorAll('[data-tab]')];
+  const next = tabs[(tabs.indexOf(document.activeElement) + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+  next.click(); next.focus();
+});
+function renderSource(data) {
+  const root = $('source');
+  root.replaceChildren(node('h3', 'Методичка полностью'));
+  if (!data.source) {
+    root.append(node('p', 'Полный текст этого материала не сохранён: он был загружен до обновления. Загрузите методичку заново, чтобы видеть её целиком.'));
+    return;
+  }
+  const pages = Math.max(1, Math.round(data.source.length / 1800));
+  root.append(node('p', `Текст извлечён из файла без изменений; для сканов — результат распознавания. Около ${pages} стр., ${data.source.length.toLocaleString('ru-RU')} символов.`, 'source-note'),
+    node('div', data.source, 'source-text'));
+}
+function questionItem(item) {
+  const article = node('article', null, 'qa-item');
+  const question = node('div', null, 'qa-bubble qa-question');
+  question.append(node('p', user.role === 'teacher' ? `${item.author_name} · ${date(item.created_at)}` : date(item.created_at), 'qa-meta'), node('p', item.question, 'qa-text'));
+  const answer = node('div', null, 'qa-bubble qa-answer');
+  const body = node('div', null, 'qa-body');
+  renderSummary(body, item.answer);
+  answer.append(node('p', 'Ответ по методичке', 'qa-meta'), body);
+  article.append(question, answer);
+  return article;
+}
+function pendingItem(text) {
+  const article = node('article', null, 'qa-item');
+  const question = node('div', null, 'qa-bubble qa-question');
+  question.append(node('p', 'Только что', 'qa-meta'), node('p', text, 'qa-text'));
+  const answer = node('div', null, 'qa-bubble qa-answer qa-pending');
+  answer.setAttribute('aria-label', 'Ищем ответ в методичке');
+  answer.append(node('span'), node('span'), node('span'));
+  article.append(question, answer);
+  return article;
+}
+function renderAsk(data) {
+  const root = $('ask');
+  root.replaceChildren(node('h3', 'Вопрос по методичке'), node('p', user.role === 'teacher'
+    ? 'Здесь студенты задают вопросы по материалу. Ниже — все их вопросы и ответы. Задайте свой вопрос, чтобы проверить, как помощник отвечает.'
+    : 'Спроси, что непонятно. Ответ строится только по тексту этой методички — если в ней ответа нет, помощник честно скажет.', 'ask-intro'));
+  const history = node('div', null, 'qa-history');
+  history.setAttribute('aria-live', 'polite');
+  const empty = node('p', user.role === 'teacher' ? 'Вопросов пока нет.' : 'Здесь появятся твои вопросы и ответы.', 'qa-empty');
+  const form = node('form', null, 'ask-form');
+  const field = node('textarea');
+  field.required = true; field.minLength = 3; field.maxLength = 1000; field.rows = 3;
+  field.placeholder = 'Например: чем вторая нормальная форма отличается от третьей?';
+  field.setAttribute('aria-label', 'Вопрос по методичке');
+  const footer = node('div', null, 'ask-footer');
+  const counter = node('span', '0 / 1000', 'ask-counter');
+  const submit = node('button', 'Спросить');
+  footer.append(node('span', 'Ctrl + Enter — отправить', 'ask-hint'), counter, submit);
+  const status = node('p', null, 'ask-status'); status.setAttribute('role', 'status');
+  form.append(field, footer, status);
+  root.append(history, empty, form);
+  const show = (item, replace) => {
+    const article = questionItem(item);
+    if (replace) replace.replaceWith(article); else history.append(article);
+    empty.hidden = true;
+    typesetMath(article); window.StudyPresentation?.enhance(article);
+    return article;
+  };
+  field.oninput = () => { counter.textContent = `${field.value.length} / 1000`; };
+  field.onkeydown = event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) form.requestSubmit(); };
+  const version = generation;
+  api(`/api/materials/${data.id}/questions`).then(items => {
+    if (version !== generation || selected?.id !== data.id) return;
+    items.forEach(item => show(item));
+  }).catch(error => { status.textContent = error.message; });
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const text = field.value.trim();
+    if (text.length < 3) { status.textContent = 'Вопрос слишком короткий.'; return; }
+    submit.disabled = true; status.textContent = '';
+    const pending = pendingItem(text);
+    history.append(pending); empty.hidden = true;
+    pending.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    try {
+      const item = await api(`/api/materials/${data.id}/questions`, json('POST', {question: text}));
+      if (version !== generation || selected?.id !== data.id) return;
+      show(item, pending); field.value = ''; field.oninput();
+    } catch (error) {
+      pending.remove(); empty.hidden = history.children.length > 0;
+      status.textContent = error.message;
+    } finally { submit.disabled = false; field.focus(); }
+  };
 }
 function renderQuiz(data) {
   $('quiz').replaceChildren();
@@ -196,10 +301,10 @@ $('publish').onclick = async () => {
     const result = await api(`/api/materials/${selected.id}`, json('PATCH', {published: !selected.published}));
     selected.published = result.published;
     $('publish').textContent = result.published ? 'Снять с публикации' : 'Опубликовать для группы';
+    setStatusChip(result.published);
     notice(result.published ? 'Материал опубликован для вашей группы.' : 'Материал скрыт от студентов.');
   } catch (error) { notice(error.message); }
 };
-const date = value => value ? new Date(value).toLocaleString('ru-RU') : '—';
 $('show-stats').onclick = async () => {
   if (!selected) return;
   const version = generation;
@@ -227,10 +332,7 @@ $('show-stats').onclick = async () => {
 };
 async function streamMaterial(form, onEvent, signal) {
   const response = await fetch('/api/material?stream=true', {method: 'POST', body: form, signal, headers: {'X-Study-Request': '1'}});
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(typeof error.detail === 'string' ? error.detail : 'Не удалось обработать материал.');
-  }
+  if (!response.ok) throw new Error(errorMessage(response, await readJson(response), 'Не удалось обработать материал.'));
   const reader = response.body.getReader(), decoder = new TextDecoder();
   let pending = '', complete = false;
   const accept = line => {
@@ -260,29 +362,27 @@ $('upload').onsubmit = async event => {
   if (!$('target-group').value) { $('status').textContent = 'Администратор должен назначить вам группу.'; return; }
   const version = generation;
   $('submit').disabled = true;
-  $('status').textContent = 'Читаем материал и готовим задания… Готовим подробный конспект с объяснениями. Большие тексты обрабатываются по разделам. Для сканов OCR может занять до пяти минут, затем потребуется время на нейросеть.';
+  const started = Date.now();
+  const progress = () => {
+    const seconds = Math.round((Date.now() - started) / 1000);
+    $('status').textContent = `Читаем методичку и выделяем суть… ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}. Большие тексты обрабатываются по частям, сканы распознаются до пяти минут.`;
+  };
+  progress();
+  const ticker = setInterval(() => { if (version === generation) progress(); }, 1000);
+  $('status').classList.add('busy');
   const form = new FormData(); form.append('file', file); form.append('group_id', $('target-group').value);
   try {
     uploadController = new AbortController();
     await streamMaterial(form, event => {
       if (version !== generation) return;
-      if (event.type === 'preview') {
-        render(event.material, true);
-        $('status').textContent = 'Конспект готов — его уже можно читать ниже. Создаём интерактив…';
-      } else if (event.type === 'progress') {
-        const message = event.done ? 'Интерактив обработан. Сохраняем готовый материал…' : `Создаём интерактив: раздел ${Math.min(event.completed + 1, event.total)} из ${event.total}. Готовых активностей: ${event.accepted}.`;
-        $('status').textContent = message;
-        $('preview-status').textContent = 'Предпросмотр · ' + message;
-      } else if (event.type === 'complete') {
+      if (event.type === 'complete') {
         window.location.assign(`/materials/${event.material.id}`);
       }
     }, uploadController.signal);
   } catch (error) {
-    if (version === generation && error.name !== 'AbortError') {
-      $('status').textContent = error.message;
-      if (!$('preview-status').hidden) $('preview-status').textContent = 'Предпросмотр не сохранён. ' + error.message;
-    }
+    if (version === generation && error.name !== 'AbortError') $('status').textContent = error.message;
   } finally {
+    clearInterval(ticker); $('status').classList.remove('busy');
     if (version === generation) { $('submit').disabled = false; uploadController = null; }
   }
 };
@@ -405,156 +505,6 @@ function renderSummary(container, text) {
     else paragraph.push(line);
   }
   flush();
-}
-
-
-function shuffled(items) {
-  const copy = [...items];
-  for (let index = copy.length - 1; index > 0; index--) {
-    const other = Math.floor(Math.random() * (index + 1));
-    [copy[index], copy[other]] = [copy[other], copy[index]];
-  }
-  return copy;
-}
-
-function matchingCards(cards) {
-  // Merge ambiguous duplicate terms, then identical explanations, without losing their text.
-  const normalize = value => value.normalize('NFC').trim().replace(/\s+/g, ' ');
-  const terms = new Map();
-  cards.forEach(card => {
-    const key = normalize(card.term);
-    if (!terms.has(key)) terms.set(key, {term: card.term, explanations: new Map()});
-    terms.get(key).explanations.set(normalize(card.explanation), card.explanation);
-  });
-  const explanations = new Map();
-  terms.forEach(card => {
-    const explanation = [...card.explanations.values()].join('\n\n');
-    const key = normalize(explanation);
-    if (!explanations.has(key)) explanations.set(key, {terms: [], explanation});
-    explanations.get(key).terms.push(card.term);
-  });
-  return [...explanations.values()].map((card, id) => ({id, term: card.terms.join(' / '), explanation: card.explanation}));
-}
-
-function renderCardActivities(cards) {
-  const root = $('cards');
-  root.replaceChildren(node('h3', 'Закрепи понятия на практике'));
-  if (!cards.length) { root.append(node('p', 'Для этого материала пока нет карточек.')); return; }
-  const modes = node('div', null, 'card-modes');
-  modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Режим карточек');
-  const play = node('button', 'Соедини пары'); play.type = 'button';
-  const study = node('button', 'Повторить карточки'); study.type = 'button';
-  const game = node('section', null, 'matching-game');
-  const review = node('section', null, 'card-review'); review.hidden = true;
-  function selectMode(isGame) {
-    game.hidden = !isGame; review.hidden = isGame;
-    play.setAttribute('aria-pressed', String(isGame)); study.setAttribute('aria-pressed', String(!isGame));
-    play.classList.toggle('active', isGame); study.classList.toggle('active', !isGame);
-  }
-  play.onclick = () => selectMode(true); study.onclick = () => selectMode(false);
-  modes.append(play, study); root.append(modes, game, review);
-  selectMode(true);
-  renderMatchingGame(game, matchingCards(cards));
-  renderCardReview(review, cards);
-}
-
-function renderMatchingGame(root, cards) {
-  root.replaceChildren(node('p', 'Выбери термин и подходящее объяснение. Можно начинать с любой колонки. Найди все пары!'));
-  const score = node('p', null, 'match-score');
-  const progress = node('progress'); progress.max = cards.length; progress.value = 0;
-  progress.setAttribute('aria-label', 'Количество найденных пар');
-  const board = node('div', null, 'match-board');
-  const termColumn = node('div', null, 'match-column');
-  const explanationColumn = node('div', null, 'match-column');
-  termColumn.append(node('h4', 'Термины')); explanationColumn.append(node('h4', 'Объяснения'));
-  const feedback = node('p', 'Выбери первую пару.', 'match-feedback');
-  feedback.setAttribute('role', 'status'); feedback.setAttribute('aria-live', 'polite');
-  const restart = node('button', 'Перемешать и начать заново'); restart.type = 'button';
-  restart.onclick = () => { renderMatchingGame(root, cards); root.querySelector('.match-term').focus(); };
-  let term = null, explanation = null, mistakes = 0, mismatch = false;
-  const matched = new Set();
-  const termButtons = new Map(), explanationButtons = new Map();
-  function paint() {
-    score.textContent = `Найдено: ${matched.size} из ${cards.length} · Ошибок: ${mistakes}`;
-    progress.value = matched.size;
-    for (const [buttons, chosen] of [[termButtons, term], [explanationButtons, explanation]]) {
-      buttons.forEach((button, id) => {
-        const solved = matched.has(id), selected = chosen === id && !solved;
-        button.disabled = solved;
-        button.setAttribute('aria-pressed', String(selected));
-        button.classList.toggle('selected', selected);
-        button.classList.toggle('mismatch', mismatch && selected);
-        button.classList.toggle('matched', solved);
-        const value = button.classList.contains('match-term') ? cards[id].term : cards[id].explanation;
-        formatInline(button, solved ? `✓ ${value}` : value);
-      });
-    }
-  }
-  function choose(side, id, event) {
-    if (matched.has(id)) return;
-    if (mismatch) { term = null; explanation = null; mismatch = false; }
-    if (side === 'term') term = term === id ? null : id;
-    else explanation = explanation === id ? null : id;
-    if (term !== null && explanation !== null) {
-      if (term === explanation) {
-        matched.add(term); term = null; explanation = null;
-        feedback.textContent = matched.size === cards.length
-          ? `Все пары найдены! ${mistakes === 0 ? 'Без ошибок — отличный результат.' : `Ошибок: ${mistakes}. Повтори сложные понятия и попробуй ещё раз.`}`
-          : `Верно! Найдено ${matched.size} из ${cards.length}. Продолжай.`;
-      } else {
-        mistakes++; mismatch = true;
-        feedback.textContent = 'Пока не совпало. Пара отмечена словами «Не совпало» и цветом. Выбери новую пару — можно попробовать ещё раз.';
-      }
-    } else feedback.textContent = term !== null ? 'Теперь выбери объяснение.' : explanation !== null ? 'Теперь выбери термин.' : 'Выбери первую пару.';
-    paint();
-    if (mismatch) {
-      formatInline(termButtons.get(term), 'Не совпало: ' + cards[term].term);
-      formatInline(explanationButtons.get(explanation), 'Не совпало: ' + cards[explanation].explanation);
-    }
-    typesetMath(root);
-    if (event.detail === 0 && term === null && explanation === null && !mismatch) {
-      const next = [...termButtons.values()].find(button => !button.disabled);
-      (next || restart).focus();
-    }
-  }
-  for (const [side, column, buttons] of [['term', termColumn, termButtons], ['explanation', explanationColumn, explanationButtons]]) {
-    shuffled(cards).forEach(card => {
-      const button = node('button', side === 'term' ? card.term : card.explanation, `match-item match-${side}`);
-      button.type = 'button'; button.onclick = event => choose(side, card.id, event);
-      buttons.set(card.id, button); column.append(button);
-    });
-  }
-  board.append(termColumn, explanationColumn);
-  root.append(score, progress, board, feedback, restart);
-  paint();
-  typesetMath(root);
-}
-
-function renderCardReview(root, cards) {
-  let deck = [...cards], index = 0, flipped = false;
-  const counter = node('p', null, 'review-count');
-  const flip = node('button', null, 'study-flip'); flip.type = 'button';
-  const hint = node('p', 'Вспомни объяснение, затем нажми на карточку, чтобы проверить себя.');
-  const controls = node('div', null, 'review-controls');
-  const previous = node('button', '← Назад'), next = node('button', 'Далее →'), mix = node('button', 'Перемешать');
-  [previous, next, mix].forEach(button => button.type = 'button');
-  function update() {
-    const card = deck[index];
-    counter.textContent = `Карточка ${index + 1} из ${deck.length}`;
-    const caption = node('span', flipped ? 'ОБЪЯСНЕНИЕ' : 'ТЕРМИН', 'flip-caption');
-    const body = richNode('span', flipped ? card.explanation : card.term, 'flip-text');
-    flip.replaceChildren(caption, body);
-    flip.setAttribute('aria-pressed', String(flipped));
-    flip.classList.toggle('is-flipped', flipped);
-    typesetMath(flip);
-    previous.disabled = index === 0; next.disabled = index === deck.length - 1;
-  }
-  flip.onclick = () => { flipped = !flipped; update(); };
-  previous.onclick = () => { if (index > 0) index--; flipped = false; update(); };
-  next.onclick = () => { if (index < deck.length - 1) index++; flipped = false; update(); };
-  mix.onclick = () => { deck = shuffled(deck); index = 0; flipped = false; update(); };
-  controls.append(previous, next, mix); root.append(counter, hint, flip, controls);
-  update();
 }
 
 

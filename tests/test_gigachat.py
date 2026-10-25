@@ -10,7 +10,6 @@ import pytest
 from fastapi import HTTPException
 from app import main, llm
 from test_app import RESULT, TEXT
-from test_interactive import LAB
 
 
 def setup_giga(monkeypatch, handler):
@@ -31,8 +30,8 @@ def chat_reply(content, reason='stop'):
     return httpx.Response(200, json={'choices': [{'finish_reason': reason, 'message': {'role': 'assistant', 'content': content}}]})
 
 
-def test_oauth_chat_and_interactive_share_token_and_preserve_preview(monkeypatch, caplog):
-    requests, previews = [], []
+def test_oauth_token_is_reused_within_one_generation(monkeypatch, caplog):
+    requests = []
     def handler(request):
         requests.append(request)
         if request.url.path.endswith('/oauth'):
@@ -44,18 +43,18 @@ def test_oauth_chat_and_interactive_share_token_and_preserve_preview(monkeypatch
         assert request.headers['Authorization'] == 'Bearer private-token'
         body = json.loads(request.content)
         assert body['model'] == 'GigaChat' and body['max_tokens'] > 0
-        assert body['messages'][1]['content'] == TEXT
         assert 'jsonObject' not in body and 'response_format' not in body
-        if '[THEORY_ACTIVITIES]' in body['messages'][0]['content']:
-            assert previews
-            return chat_reply(json.dumps({'labs': [LAB], 'challenges': []}))
+        if 'JSON-объект' not in body['messages'][0]['content']:
+            assert '<<<\n' + TEXT + '\n>>>' in body['messages'][1]['content']
+            return chat_reply('Заметки раздела.')
         return chat_reply(json.dumps(RESULT))
     setup_giga(monkeypatch, handler)
-    async def preview(value): previews.append(value.summary)
+    monkeypatch.setattr(llm, 'DIRECT_TEXT_CHARS', len(TEXT) - 1)
+    monkeypatch.setattr(llm, 'split_text', lambda text: [text])
     with caplog.at_level(logging.INFO, logger='uvicorn.error'):
-        result = asyncio.run(main.generate(TEXT, on_preview=preview))
-    assert result.summary == RESULT['summary'] and len(result.labs) == 1
-    assert len(requests) == 3
+        result = asyncio.run(main.generate(TEXT))
+    assert result.summary == RESULT['summary']
+    assert len(requests) == 3  # One OAuth request serves both the notes and the final request.
     assert '[GigaChat]' in caplog.text
     assert 'private-basic-key' not in caplog.text and 'private-token' not in caplog.text
 

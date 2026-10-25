@@ -8,6 +8,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .store import db, User, Group, LoginSession, TeacherGroup
+from . import limits
 
 router = APIRouter(prefix='/api/auth')
 COOKIE = 'study_session'
@@ -85,10 +86,16 @@ def issue_session(user, session, response):
     response.set_cookie(COOKIE, token, httponly=True, samesite='strict', secure=os.getenv('COOKIE_SECURE') == '1', max_age=86400)
     return public_user(user, session)
 
+def client_address(request):
+    return request.client.host if request.client else 'unknown'
+
 @router.post('/register')
-def register(data: Registration, response: Response, session: Session = Depends(db)):
-    group = session.scalar(select(Group).where(Group.invite == data.invite_code))
+def register(data: Registration, request: Request, response: Response, session: Session = Depends(db)):
+    address = ('address', client_address(request))
+    limits.invites_by_address.check(address)
+    group = session.scalar(select(Group).where(Group.invite == data.invite_code.strip()))
     if not group:
+        limits.invites_by_address.failed(address)
         raise HTTPException(400, 'Неверный код учебной группы.')
     user = User(username=data.username.lower(), name=data.name.strip(), password=hash_password(data.password), role='student', group_id=group.id)
     session.add(user)
@@ -100,11 +107,17 @@ def register(data: Registration, response: Response, session: Session = Depends(
     return issue_session(user, session, response)
 
 @router.post('/login')
-def login(data: Credentials, response: Response, session: Session = Depends(db)):
+def login(data: Credentials, request: Request, response: Response, session: Session = Depends(db)):
+    account, address = ('account', data.username.lower()), ('address', client_address(request))
+    limits.login_by_account.check(account)
+    limits.login_by_address.check(address)
     user = session.scalar(select(User).where(User.username == data.username.lower()))
     valid = verify_password(data.password, user.password if user else DUMMY)
     if not user or not valid:
+        limits.login_by_account.failed(account)
+        limits.login_by_address.failed(address)
         raise HTTPException(401, 'Неверный логин или пароль.')
+    limits.login_by_account.reset(account)
     return issue_session(user, session, response)
 
 @router.post('/logout')

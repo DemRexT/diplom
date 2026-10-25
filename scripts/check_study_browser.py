@@ -9,7 +9,6 @@ import mimetypes
 from pathlib import Path
 from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright
-from playground_checks import run as playground_checks
 
 ROOT = Path(__file__).resolve().parents[1]
 SUMMARY = r'''## Определение тензора
@@ -31,22 +30,12 @@ SUMMARY = r'''## Определение тензора
 
 <img src="https://invalid.example/x" onerror="window.pwned=1">
 '''
-LAB = {
-    'title': 'Свёртка матрицы', 'topic': 'Свёртка тензоров',
-    'explanation': 'Свёртка тензора типа (1,1) — сумма диагональных компонент.',
-    'task': 'Измени компоненты. Как сохранить сумму равной пяти?',
-    'formula': r'\(s=a_{11}+a_{22}\)',
-    'parameters': [
-        {'name': 'a11', 'label': 'Компонента a11', 'minimum': -5, 'maximum': 5, 'step': .5, 'initial': 2},
-        {'name': 'a22', 'label': 'Компонента a22', 'minimum': -5, 'maximum': 5, 'step': .5, 'initial': 3},
-    ],
-    'outputs': [{'label': 'Свёртка', 'expression': 'a11+a22', 'unit': ''}], 'plot_variable': 'a11',
-}
+SOURCE = 'Глава 1. Тензоры\n\nПолный текст методички <img src=x onerror="window.pwned=1"> без обработки.'
 MATERIAL = {'id': 42, 'published': True, 'quiz_revision': 1, 'title': 'Тензоры',
-            'teacher_name': 'Teacher', 'group_name': 'Group', 'summary': SUMMARY,
-            'key_points': ['**Свёртка** уменьшает порядок.'],
-            'cards': [{'term': 'Тензор', 'explanation': 'Полилинейное отображение.'}],
-            'quiz': [{'question': 'Порядок?', 'options': ['1', '2', '3', '4']}], 'labs': [LAB]}
+            'teacher_name': 'Teacher', 'group_name': 'Group', 'summary': SUMMARY, 'source': SOURCE,
+            'quiz': [{'question': 'Порядок?', 'options': ['1', '2', '3', '4']}]}
+ANSWER = {'id': 1, 'question': 'Что такое свёртка?', 'answer': 'Свёртка — сумма \\(a_{11}+a_{22}\\).',
+          'created_at': '2026-01-01T00:00:00+00:00', 'author_name': 'Student'}
 
 
 def main():
@@ -70,57 +59,43 @@ def main():
                 return
             if url.path.startswith('/api/'):
                 if request.request.method != 'GET': writes.append(url.path)
-                payload = {'id': 1, 'role': 'student', 'name': 'Student', 'group': 'Group'} if url.path == '/api/auth/me' else MATERIAL if url.path == '/api/materials/42' else {'ok': True}
+                payload = ({'id': 1, 'role': 'student', 'name': 'Student', 'group': 'Group'} if url.path == '/api/auth/me'
+                           else MATERIAL if url.path == '/api/materials/42'
+                           else [] if url.path.endswith('/questions') and request.request.method == 'GET'
+                           else ANSWER if url.path.endswith('/questions') else {'ok': True})
                 request.fulfill(content_type='application/json', body=json.dumps(payload))
                 return
             file = ROOT / 'app' / 'static' / url.path.removeprefix('/static/') if url.path.startswith('/static/') else ROOT / 'app/static/index.html'
             request.fulfill(body=file.read_bytes(), content_type=mimetypes.guess_type(file)[0] or 'application/octet-stream')
         page.route('**/*', route)
         page.goto('http://study.local/materials/42', wait_until='networkidle')
-        page.wait_for_selector('.study-lab')
-        assert page.locator('.lab-results strong').inner_text() == '5'
-        assert page.locator('.lab-chart svg polyline').count() == 1
+        page.wait_for_selector('#summary table')
         assert page.locator('#summary .katex-error').count() == 0
         assert page.locator('#summary .study-math-error').count() == 1
         assert page.locator('#summary .katex [class*=brace]').count() > 0
         assert page.locator('#summary table th').count() == 2
         assert page.locator('#summary table td').count() == 2
-        # Lab is embedded beside its topic, before the next section.
-        assert page.locator('.study-lab').evaluate('(el)=>el.nextElementSibling.textContent') == 'Повреждённая формула'
         page.locator('.study-math-error button').click()
         assert page.locator('.study-math-error code').inner_text() == r'\frac{1}{'
-        before = page.locator('.lab-chart svg circle').get_attribute('cy')
-        page.get_by_role('spinbutton', name='Компонента a11 — число').fill('4')
-        assert page.locator('.lab-results strong').inner_text() == '7'
-        assert page.locator('.lab-chart svg circle').get_attribute('cy') != before
-        slider = page.get_by_role('slider', name='Компонента a11 — ползунок')
-        slider.fill('1')
-        assert page.locator('.lab-results strong').inner_text() == '4'
-        assert page.get_by_role('spinbutton', name='Компонента a11 — число').input_value() == '1'
-        page.locator('.study-lab button', has_text='Сбросить').click()
-        assert page.locator('.lab-results strong').inner_text() == '5'
-        page.locator('.study-lab summary').click()
-        assert page.locator('.study-lab details code').inner_text() == 'a11+a22'
+        # The full methodology is plain text: markup inside it is shown, never executed.
+        page.locator('[data-tab=source]').click()
+        assert page.locator('#source .source-text').inner_text() == SOURCE
+        assert page.locator('#source img').count() == 0
+        page.locator('[data-tab=ask]').click()
+        page.locator('#ask textarea').fill(ANSWER['question'])
+        page.locator('#ask button', has_text='Спросить').click()
+        page.wait_for_selector('#ask .qa-item')
+        assert page.locator('#ask .qa-question .qa-text').inner_text() == ANSWER['question']
+        assert page.locator('#ask .qa-answer .katex').count() == 1
         page.set_viewport_size({'width': 390, 'height': 844})
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         if args.screenshot: page.screenshot(path=args.screenshot, full_page=True)
-        # Undefined values produce a message, not Infinity or a broken page.
-        page.evaluate("""() => {
-          const root = document.createElement('div'); root.id='domain-test'; document.body.append(root);
-          const lab = {title:'Деление', topic:'', explanation:'Пример', task:'Измени x', formula:'1/x',
-            parameters:[{name:'x',label:'x',minimum:-1,maximum:1,step:1,initial:0}],
-            outputs:[{label:'Результат',expression:'1/x'}],plot_variable:'x'};
-          window.StudyLabs.render(root,[lab]);
-        }""")
-        assert page.locator('#domain-test .lab-domain-error').count() == 1
-        assert page.locator('#domain-test svg polyline').count() == 2
-        playground_checks(page, LAB)
         assert page.evaluate('window.pwned') is None
         assert not external, external
         assert not errors, errors
-        assert writes == ['/api/materials/42/view'], writes
+        assert writes == ['/api/materials/42/view', '/api/materials/42/questions'], writes
         assert MATERIAL['summary'] == SUMMARY
-        print('Browser checks passed: prime indices, underbrace, invalid-formula fallback, math/table pipes, embedded lab, sliders/results/plot/reset, domain errors, mobile layout, no material writes.')
+        print('Browser checks passed: underbrace, invalid-formula fallback, math/table pipes, plain-text source, question answer, mobile layout.')
         browser.close()
 
 

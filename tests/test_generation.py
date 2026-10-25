@@ -12,16 +12,16 @@ from test_accounts import accounts, login
 from test_app import RESULT
 
 
-def mock_yandex(monkeypatch, handler, activity_handler=None):
+def mock_yandex(monkeypatch, handler):
     monkeypatch.setenv('YANDEX_API_KEY', 'test-key')
     monkeypatch.setenv('YANDEX_FOLDER_ID', 'test-folder')
     real_client = httpx.AsyncClient
-    def dispatch(request):
-        body = json.loads(request.content)
-        if '[THEORY_ACTIVITIES]' in body['messages'][0]['text']:
-            return activity_handler(request) if activity_handler else reply(json.dumps({'labs': [], 'challenges': []}))
-        return handler(request)
-    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: real_client(transport=httpx.MockTransport(dispatch), **kwargs))
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+
+
+def unwrap(text):
+    """The source text the prompt delimits with <<< and >>>."""
+    return text.split('<<<\n', 1)[1].rsplit('\n>>>', 1)[0]
 
 
 def reply(text, status='ALTERNATIVE_STATUS_FINAL'):
@@ -35,38 +35,29 @@ def test_split_preserves_every_character(source, limit):
     assert all(0 < len(chunk) <= limit for chunk in chunks)
 
 
-def test_long_material_keeps_detailed_sections_instead_of_final_short_summary(monkeypatch):
+def test_long_material_essence_is_built_from_notes_of_every_fragment(monkeypatch):
     source = ''.join(f'Тема {i}: определение и пример.\n' for i in range(3000))
     assert len(source) > 45000
-    details, notes, final_calls = [], [], []
+    notes, final_calls = [], []
     def handler(request):
         body = json.loads(request.content)
         assert request.headers['Authorization'] == 'Api-Key test-key'
-        text = body['messages'][1]['text']
+        text = unwrap(body['messages'][1]['text'])
         if body.get('jsonObject'):
             final_calls.append(body)
+            assert 'СУТЬ' in body['messages'][0]['text'] and '«вода»' in body['messages'][0]['text']
             for index in range(1, len(notes) + 1):
-                assert f'Заметки для интерактива {index}' in text
+                assert f'Заметки {index}' in text
             assert len(text) <= llm.DIRECT_TEXT_CHARS
-            return reply(json.dumps(RESULT))  # This short summary must never replace the chapters.
-        if 'понятный учебный конспект' in body['messages'][0]['text']:
-            details.append(text)
-            assert len(text) <= llm.DETAILED_CHUNK_CHARS
-            return reply(f'## Объяснение раздела {len(details)}\n\n' + text[:6500])
+            return reply(json.dumps(RESULT))
         notes.append(text)
         assert len(text) <= llm.CHUNK_CHARS
-        return reply(f'Заметки для интерактива {len(notes)}')
+        return reply(f'Заметки {len(notes)}')
     mock_yandex(monkeypatch, handler)
     generated = asyncio.run(main.generate(source))
-    assert ''.join(details) == source
     assert ''.join(notes) == source
     assert len(final_calls) == 1
-    assert len(generated.summary) > 10000
-    assert generated.summary != RESULT['summary']
-    for index in range(1, len(details) + 1):
-        assert f'## Объяснение раздела {index}' in generated.summary
-    for field in ['title', 'key_points', 'cards', 'quiz']:
-        assert generated.model_dump()[field] == RESULT[field]
+    assert generated.model_dump() == RESULT
 
 
 def test_hierarchical_reduction_combines_every_intermediate_note(monkeypatch):
@@ -79,9 +70,9 @@ def test_hierarchical_reduction_combines_every_intermediate_note(monkeypatch):
     def handler(request):
         body = json.loads(request.content)
         if body.get('jsonObject'):
-            assert len(body['messages'][1]['text']) <= 100
+            assert len(unwrap(body['messages'][1]['text'])) <= 100
             return reply(json.dumps(RESULT))
-        levels.append(body['messages'][1]['text'])
+        levels.append(unwrap(body['messages'][1]['text']))
         return reply('Ключевые факты.')
     mock_yandex(monkeypatch, handler)
     source = 'Начальный материал. ' * 50

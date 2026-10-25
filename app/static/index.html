@@ -1,20 +1,20 @@
 <!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Суть · Учись осмысленно</title><link rel="stylesheet" href="/static/vendor/katex/katex.min.css"><link rel="stylesheet" href="/static/style.css?v=6"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Суть · Учись осмысленно</title><link rel="stylesheet" href="/static/vendor/katex/katex.min.css"><link rel="stylesheet" href="/static/style.css?v=8"></head>
 <body>
 <header><a class="brand" href="/">✳ Суть</a><span>Твой учебный помощник</span><span class="badge" id="account-label">Личный кабинет</span><button id="logout" hidden>Выйти</button></header>
 <main>
-<section class="hero" id="hero"><div class="eyebrow">МЕНЬШЕ ШУМА. БОЛЬШЕ СМЫСЛА.</div><h1>От методички —<br>к пониманию.</h1><p>Выдели главное, разбери понятия и проверь себя.<br>Загрузи учебный материал — начнём с сути.</p></section>
+<section class="hero" id="hero"><div class="eyebrow">МЕНЬШЕ ШУМА. БОЛЬШЕ СМЫСЛА.</div><h1>От методички —<br>к пониманию.</h1><p>Методичка целиком, её суть без воды и ответы на вопросы по тексту.<br>Меньше перелистывания — больше понимания.</p></section>
 <p id="notice" role="status" aria-live="polite"></p>
 <section id="auth" class="panel">
 <h2>Вход в учебный кабинет</h2><p>Студенты регистрируются по коду группы от преподавателя.</p>
 <form id="login-form" class="auth-form">
-<label>Логин<input name="username" autocomplete="username" required minlength="3" maxlength="100" pattern="[A-Za-z0-9_.-]+"></label>
+<label>Логин<input name="username" autocomplete="username" required minlength="3" maxlength="100" pattern="[A-Za-z0-9_.\-]+"></label>
 <label>Пароль<input name="password" type="password" autocomplete="current-password" required minlength="10" maxlength="128"></label>
 <button>Войти</button></form>
 <details><summary>Регистрация студента</summary><form id="register-form" class="auth-form">
 <label>Имя и фамилия<input name="name" autocomplete="name" required maxlength="150"></label>
-<label>Логин (латинские буквы, цифры, _ . -)<input name="username" autocomplete="username" required minlength="3" maxlength="100" pattern="[A-Za-z0-9_.-]+"></label>
+<label>Логин (латинские буквы, цифры, _ . -)<input name="username" autocomplete="username" required minlength="3" maxlength="100" pattern="[A-Za-z0-9_.\-]+"></label>
 <label>Пароль (от 10 символов)<input name="password" type="password" autocomplete="new-password" required minlength="10" maxlength="128"></label>
 <label>Код группы<input name="invite_code" required maxlength="100"></label><button>Создать аккаунт студента</button></form></details>
 </section>
@@ -25,20 +25,24 @@
 <form id="create-group" class="auth-form"><h3>Новая группа</h3><label>Название<input name="name" required maxlength="100"></label><button>Создать группу</button></form>
 <details><summary>Создать преподавателя</summary><form id="create-teacher" class="auth-form">
 <label>Имя и фамилия<input name="name" required maxlength="150"></label>
-<label>Логин<input name="username" required minlength="3" maxlength="100" pattern="[A-Za-z0-9_.-]+" autocomplete="off"></label>
+<label>Логин<input name="username" required minlength="3" maxlength="100" pattern="[A-Za-z0-9_.\-]+" autocomplete="off"></label>
 <label>Начальный пароль<input name="password" type="password" required minlength="10" maxlength="128" autocomplete="new-password"></label><button>Создать преподавателя</button></form></details>
 <form id="assign-teacher" class="auth-form"><h3>Назначить преподавателя в группу</h3><label>Группа<select id="admin-group" required></select></label><label>Преподаватель<select id="admin-teacher" required></select></label><button>Назначить</button></form>
 <div id="admin-groups"></div></section><section class="panel" id="library-panel"><h2>Библиотека материалов</h2><p id="library-empty" hidden>Пока нет доступных материалов.</p><div id="library"></div></section>
-<section class="upload" id="teacher-upload" hidden><div class="file-icon">↥</div><h2>С чего начнём?</h2><p>Выбери методичку, лекцию или учебную главу</p><form id="upload"><label class="group-picker">Группа для материала<select id="target-group" required></select></label><p id="no-groups" hidden>Нет назначенных групп. Обратитесь к администратору.</p><label class="picker">Выбрать материал<input id="file" type="file" accept=".pdf,.docx,.txt" required></label><span id="filename">PDF (включая сканы), DOCX или TXT · до 10 МБ</span><p class="privacy">Текст будет отправлен провайдеру нейросети. Большие документы обрабатываются несколькими запросами.<br>Не загружай персональные данные и конфиденциальные документы.</p><button id="submit" type="submit" disabled>Разобрать материал ↗</button></form><p id="status" role="status" aria-live="polite"></p></section>
-<div class="steps" id="steps"><article><b>01 / Конспект</b><p>Понятные объяснения без лишних слов</p></article><article><b>02 / Карточки</b><p>Соединяй понятия и объяснения</p></article><article><b>03 / Практика</b><p>Тест с объяснением ответов</p></article></div>
-<section id="result" hidden><p id="preview-status" class="preview-status" role="status" aria-live="polite" hidden></p><label class="material-link">Ссылка на материал<input id="material-url" readonly aria-label="Ссылка на материал"></label><div id="teacher-actions" hidden><button id="publish"></button><button id="show-stats">Статистика</button></div><section id="statistics" class="panel" hidden></section><div class="eyebrow">ТВОЙ МАТЕРИАЛ</div><h2 id="title"></h2><p id="material-author"></p><nav aria-label="Разделы материала"><button data-tab="summary" class="active">Конспект</button><button data-tab="cards">Карточки</button><button data-tab="quiz">Проверить себя</button></nav><div id="summary" class="panel"></div><div id="cards" class="panel" hidden></div><div id="quiz" class="panel" hidden></div></section>
+<section class="upload" id="teacher-upload" hidden><div class="file-icon">↥</div><h2>С чего начнём?</h2><p>Выбери методичку, лекцию или учебную главу</p><form id="upload"><label class="group-picker">Группа для материала<select id="target-group" required></select></label><p id="no-groups" hidden>Нет назначенных групп. Обратитесь к администратору.</p><label class="picker">Выбрать материал<input id="file" type="file" accept=".pdf,.docx,.txt" required></label><span id="filename">PDF (включая сканы), DOCX или TXT · до 10 МБ</span><p class="privacy">Текст будет отправлен провайдеру нейросети и сохранён на сервере, чтобы показывать методичку и отвечать на вопросы студентов.<br>Не загружай персональные данные и конфиденциальные документы.</p><button id="submit" type="submit" disabled>Разобрать материал ↗</button></form><p id="status" role="status" aria-live="polite"></p></section>
+<div class="steps" id="steps"><article><b>01 / Методичка</b><p>Полный текст без изменений</p></article><article><b>02 / Суть</b><p>Главное без воды</p></article><article><b>03 / Вопросы</b><p>Ответы строго по тексту методички</p></article></div>
+<section id="result" hidden>
+<div class="material-head panel"><div class="eyebrow">МАТЕРИАЛ</div><h2 id="title"></h2><p id="material-author"></p><span id="material-status" class="chip" hidden></span>
+<label class="material-link">Ссылка на материал<input id="material-url" readonly aria-label="Ссылка на материал"></label><div id="teacher-actions" hidden><button id="publish"></button><button id="show-stats" class="secondary">Статистика</button></div></div>
+<section id="statistics" class="panel" hidden></section>
+<nav class="tabs" role="tablist" aria-label="Разделы материала"><button role="tab" id="tab-source" aria-controls="source" data-tab="source"><span class="tab-num">1</span>Методичка</button><button role="tab" id="tab-summary" aria-controls="summary" data-tab="summary" class="active"><span class="tab-num">2</span>Суть</button><button role="tab" id="tab-ask" aria-controls="ask" data-tab="ask"><span class="tab-num">3</span>Вопрос по методичке</button><button role="tab" id="tab-quiz" aria-controls="quiz" data-tab="quiz"><span class="tab-num">✓</span>Проверить себя</button></nav>
+<div id="source" class="panel" role="tabpanel" aria-labelledby="tab-source" hidden></div><div id="summary" class="panel" role="tabpanel" aria-labelledby="tab-summary"></div><div id="ask" class="panel" role="tabpanel" aria-labelledby="tab-ask" hidden></div><div id="quiz" class="panel" role="tabpanel" aria-labelledby="tab-quiz" hidden></div>
+</section>
 </section></main><footer>Суть / Учись осмысленно <span>Ответы ИИ могут содержать ошибки. Сверяйся с источником.</span></footer>
 <script defer src="/static/vendor/katex/katex.min.js"></script>
 <script defer src="/static/vendor/katex/contrib/auto-render.min.js"></script>
 <script defer src="/static/vendor/mermaid/mermaid.min.js"></script>
 <script defer src="/static/vendor/dompurify/purify.min.js"></script>
 <script defer src="/static/vendor/markdown-it/markdown-it.umd.min.js"></script>
-<script defer src="/static/presentation.js?v=6"></script>
-<script defer src="/static/modules.js?v=6"></script>
-<script defer src="/static/labs.js?v=6"></script>
-<script defer src="/static/app.js?v=6"></script></body></html>
+<script defer src="/static/presentation.js?v=8"></script>
+<script defer src="/static/app.js?v=8"></script></body></html>

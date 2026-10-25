@@ -16,7 +16,7 @@ from test_generation import mock_yandex, reply
 
 
 @pytest.mark.parametrize('first', [
-    {'summary': 'Подробный исходный конспект с объяснениями.'},
+    {'summary': 'Суть методички без воды.'},
     'not-json',
     [],
 ])
@@ -42,22 +42,21 @@ def test_one_repair_fills_missing_fields_and_preserves_available_summary(monkeyp
     assert 'Исправление структуры успешно' in caplog.text
 
 
-def test_repair_does_not_regenerate_long_document_chapters(monkeypatch):
-    calls, chapter_calls, structured = [], [], []
+def test_repair_keeps_essence_and_does_not_repeat_notes(monkeypatch):
+    calls, note_calls, structured = [], [], []
     def handler(request):
         body = json.loads(request.content)
         calls.append(body)
         if not body.get('jsonObject'):
-            chapter_calls.append(body)
-            return reply(f'## Тема {len(chapter_calls)}\n\nПодробное объяснение раздела {len(chapter_calls)}.')
+            note_calls.append(body)
+            return reply(f'Заметки раздела {len(note_calls)}.')
         structured.append(body)
-        return reply(json.dumps({'summary': 'Короткий ответ без остальных полей'} if len(structured) == 1 else RESULT))
+        return reply(json.dumps({'summary': 'Суть без остальных полей'} if len(structured) == 1 else RESULT))
     mock_yandex(monkeypatch, handler)
-    generated = asyncio.run(main.generate('Учебный материал. ' * 1000))
-    assert len(chapter_calls) == 2 and len(structured) == 2 and len(calls) == 4
-    assert 'Подробное объяснение раздела 1.' in generated.summary
-    assert 'Подробное объяснение раздела 2.' in generated.summary
-    assert RESULT['summary'] not in generated.summary
+    generated = asyncio.run(main.generate('Учебный материал. ' * 2000))
+    assert len(note_calls) == 2 and len(structured) == 2 and len(calls) == 4
+    assert 'Суть методички уже сохранена' in structured[1]['messages'][0]['text']
+    assert generated.summary == 'Суть без остальных полей'
 
 
 def test_invalid_quiz_is_repaired_before_saving(database, monkeypatch):

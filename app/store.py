@@ -63,6 +63,15 @@ class Attempt(Base):
     total: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[str] = mapped_column(String(40))
 
+class MaterialQuestion(Base):
+    __tablename__ = 'questions'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    material_id: Mapped[int] = mapped_column(ForeignKey('materials.id'), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    question: Mapped[str] = mapped_column(Text)
+    answer: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(String(40))
+
 url = os.getenv('DATABASE_URL')
 if not url:
     directory = Path(__file__).resolve().parent.parent / 'var'
