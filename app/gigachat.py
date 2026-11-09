@@ -13,6 +13,7 @@ from .llm import logger, safe_diagnostic, provider_diagnostic
 
 OAUTH_URL = 'https://ngw.devices.sberbank.ru:9443/api/v2/oauth'
 CHAT_URL = 'https://api.giga.chat/v1/chat/completions'
+MODELS_URL = 'https://api.giga.chat/v1/models'
 
 
 @dataclass
@@ -59,6 +60,16 @@ async def access_token(client, key):
         return token
 
 
+async def available_models(client, token):
+    """Model names this key may use; empty if the list cannot be fetched."""
+    try:
+        response = await client.get(MODELS_URL, headers={'Authorization': 'Bearer ' + token})
+        response.raise_for_status()
+        return sorted(item['id'] for item in response.json()['data'] if isinstance(item.get('id'), str))
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return []
+
+
 async def complete_gigachat(client, system, text, *, key, structured, max_tokens, stage):
     key = key.removeprefix('Basic ').strip()
     model = os.getenv('GIGACHAT_MODEL', 'GigaChat').strip()
@@ -81,6 +92,14 @@ async def complete_gigachat(client, system, text, *, key, structured, max_tokens
             response = await client.post(CHAT_URL, headers={'Authorization': 'Bearer ' + token},
                 json={'model': model, 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': text}],
                       'temperature': .2, 'max_tokens': max_tokens, 'stream': False})
+        if response.status_code == 404:
+            # Usually GIGACHAT_MODEL names a model that is retired or not included in the key's plan.
+            models = await available_models(client, token)
+            logger.error('[GigaChat] Модель «%s» недоступна для этого ключа. Доступные модели: %s. '
+                         'Укажите одну из них в переменной GIGACHAT_MODEL и перезапустите сервер.',
+                         safe_diagnostic(model, key), ', '.join(models) or 'список получить не удалось')
+            raise HTTPException(503, f'Модель GigaChat «{model}» недоступна. Укажите в GIGACHAT_MODEL одну из доступных: '
+                                     f'{", ".join(models) or "см. список моделей в личном кабинете GigaChat"}.')
         request_id = await check_response(response, stage, key, token, text, system)
     except httpx.TimeoutException:
         logger.error('[GigaChat] Этап: %s | тайм-аут запроса', stage)

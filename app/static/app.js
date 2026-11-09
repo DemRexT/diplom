@@ -1,39 +1,43 @@
 const $ = id => document.getElementById(id);
+const I18N = window.StudyI18n;
+const t = (key, vars) => I18N.t(key, vars);
 const node = (tag, text, cls) => {
   const element = document.createElement(tag);
   if (text !== undefined && text !== null) element.textContent = text;
   if (cls) element.className = cls;
   return element;
 };
-let user = null;
 let selected = null;
-let uploadController = null;
 let generation = 0;
+let activeTab = 'interactive';
+let translation = null;
+let chatField = null;
 const materialMatch = window.location.pathname.match(/^\/materials\/(\d+)\/?$/);
 const materialId = materialMatch ? materialMatch[1] : null;
 
-async function openCurrentMaterial() {
-  if (!materialId || !user) return;
-  const version = generation;
-  const data = await api(`/api/materials/${materialId}`);
-  if (version !== generation) return;
-  render(data);
-  document.title = `${data.title} · Суть`;
-  if (user.role === 'student') {
-    await api(`/api/materials/${materialId}/view`, {method: 'POST'});
-  }
+// The creator's browser keeps a secret edit key per material; without it the page is read-only.
+function editKeys() {
+  try { return JSON.parse(localStorage.getItem('study-edit-keys') || '{}') || {}; } catch (_) { return {}; }
+}
+function saveEditKey(id, key) {
+  try { localStorage.setItem('study-edit-keys', JSON.stringify({...editKeys(), [id]: key})); } catch (_) { /* Editing works in this tab only. */ }
+  sessionKeys[id] = key;
+}
+const sessionKeys = {};
+const editKey = id => sessionKeys[id] || editKeys()[id] || '';
+const editHash = window.location.hash.match(/^#edit=([\w-]+)$/);
+if (materialId && editHash) {
+  saveEditKey(materialId, editHash[1]);
+  history.replaceState(null, '', window.location.pathname);  // Keep the key out of the visible address.
 }
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
-    headers: {'X-Study-Request': '1', ...options.headers},
+    headers: {'X-Study-Request': '1', 'X-Lang': I18N.lang, ...(materialId ? {'X-Edit-Key': editKey(materialId)} : {}), ...options.headers},
   });
   const data = await readJson(response);
-  if (!response.ok) {
-    if (response.status === 401 && user) setUser(null);
-    throw new Error(errorMessage(response, data, 'Проверьте заполненные поля.'));
-  }
+  if (!response.ok) throw new Error(errorMessage(response, data, t('checkFields')));
   return data;
 }
 async function readJson(response) {
@@ -42,223 +46,424 @@ async function readJson(response) {
 }
 function errorMessage(response, data, fallback) {
   if (typeof data?.detail === 'string') return data.detail;
-  if (response.status === 413) return 'Файл слишком большой для сервера.';
-  if (response.status >= 500) return 'Сервер временно недоступен. Попробуйте ещё раз через минуту.';
+  if (response.status === 413) return t('serverTooBig');
+  if (response.status >= 500) return t('serverDown');
   return fallback;
 }
-const date = value => value ? new Date(value).toLocaleString('ru-RU') : '—';
+const date = value => value ? new Date(value).toLocaleString(I18N.lang === 'en' ? 'en-GB' : 'ru-RU') : '—';
+const clock = started => {
+  const seconds = Math.round((Date.now() - started) / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+};
 function json(method, body) {
   return {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)};
 }
 function notice(message) { $('notice').textContent = message; }
-function setUser(value) {
-  uploadController?.abort();
-  uploadController = null;
-  generation++;
-  user = value;
-  selected = null;
-  $('auth').hidden = !!user;
-  $('workspace').hidden = !user;
-  $('logout').hidden = !user;
-  $('teacher-upload').hidden = user?.role !== 'teacher' || !!materialId;
+
+// ---- Long operations (upload, translation) answer with NDJSON: heartbeat… then complete or error.
+async function readProgress(response, onComplete) {
+  if (!response.ok) throw new Error(errorMessage(response, await readJson(response), t('uploadFailed')));
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let pending = '', complete = false;
+  const accept = line => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line);
+    if (event.type === 'error') throw new Error(event.detail);
+    if (event.type === 'complete') { complete = true; onComplete(event.material); }
+  };
+  try {
+    while (true) {
+      const {value, done} = await reader.read();
+      pending += decoder.decode(value, {stream: !done});
+      let boundary;
+      while ((boundary = pending.indexOf('\n')) !== -1) { accept(pending.slice(0, boundary)); pending = pending.slice(boundary + 1); }
+      if (done) break;
+    }
+    if (pending.trim()) accept(pending);
+    if (!complete) throw new Error(t('streamCut'));
+  } finally { reader.releaseLock(); }
+}
+
+// ---- Page layout: the home page uploads a guide, /materials/<id> shows one material.
+function setupPage() {
+  $('material-upload').hidden = !!materialId;
   $('hero').hidden = !!materialId;
   $('steps').hidden = !!materialId;
-  $('library-panel').hidden = !!materialId || user?.role === 'admin';
-  $('admin-panel').hidden = user?.role !== 'admin';
-  $('back-library').hidden = !materialId;
-  $('result').hidden = true;
-  $('library').replaceChildren();
-  $('statistics').replaceChildren();
-  ['source', 'summary', 'ask', 'quiz', 'admin-groups', 'admin-group', 'admin-teacher'].forEach(id => $(id).replaceChildren());
-  $('create-teacher').reset();
-  $('material-url').value = '';
-  $('title').textContent = '';
-  $('material-author').textContent = '';
-  $('account-label').textContent = user ? `${user.name} · ${({teacher: 'Преподаватель', student: 'Студент', admin: 'Администратор'})[user.role]}` : 'Личный кабинет';
-  $('group-label').textContent = user?.role === 'student' ? `Группа: ${user.group}` : '';
-  const groups = user?.groups || [];
-  $('target-group').replaceChildren();
-  const placeholder = node('option', 'Выберите группу'); placeholder.value = '';
-  $('target-group').append(placeholder);
-  groups.forEach(group => {
-    const option = node('option', `${group.name} (#${group.id})`); option.value = group.id;
-    $('target-group').append(option);
-  });
-  $('no-groups').hidden = groups.length !== 0;
-  if (user?.role === 'teacher') {
-    $('group-label').textContent = groups.length ? groups.map(g => `${g.name}: код регистрации ${g.invite_code}`).join(' · ') : 'Группы пока не назначены администратором.';
-  }
+  $('back-home').hidden = !materialId;
 }
-async function refreshLibrary() {
-  const version = generation;
-  const materials = await api('/api/materials');
-  if (version !== generation) return;
-  $('library').replaceChildren();
-  $('library-empty').hidden = materials.length !== 0;
-  for (const material of materials) {
-    const button = node('a', null, 'library-item');
-    button.href = `/materials/${material.id}`;
-    button.append(node('strong', material.title), node('span', `${material.teacher_name} · ${material.group_name}`, 'library-meta'));
-    if (user.role === 'teacher') button.append(node('span', material.published ? 'Опубликован' : 'Черновик', material.published ? 'chip chip-live' : 'chip'));
-    $('library').append(button);
-  }
-}
-for (const [formId, endpoint] of [['login-form', 'login'], ['register-form', 'register']]) {
-  $(formId).onsubmit = async event => {
-    event.preventDefault();
-    const button = event.target.querySelector('button');
-    button.disabled = true;
-    try {
-      const data = Object.fromEntries(new FormData(event.target));
-      setUser(await api('/api/auth/' + endpoint, json('POST', data)));
-      event.target.reset();
-      notice('');
-      if (materialId) await openCurrentMaterial();
-      else if (user.role === 'admin') await loadAdmin();
-      else await refreshLibrary();
-    } catch (error) { notice(error.message); }
-    finally { button.disabled = false; }
-  };
-}
-$('logout').onclick = async () => {
-  try { await api('/api/auth/logout', {method: 'POST'}); setUser(null); notice('Вы вышли из аккаунта.'); }
-  catch (error) { notice(error.message); }
-};
 $('file').onchange = () => {
   const file = $('file').files[0];
-  $('filename').textContent = file ? file.name : 'PDF (включая сканы), DOCX или TXT · до 10 МБ';
+  $('filename').textContent = file ? file.name : t('fileHint');
   $('submit').disabled = !file;
 };
-document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => {
-  document.querySelectorAll('[data-tab]').forEach(other => {
-    other.classList.toggle('active', other === button);
-    other.setAttribute('aria-selected', String(other === button));
-    other.tabIndex = other === button ? 0 : -1;
-  });
-  ['source', 'summary', 'ask', 'quiz'].forEach(id => $(id).hidden = id !== button.dataset.tab);
-  window.StudyPresentation?.enhance($(button.dataset.tab));
-});
+$('upload').onsubmit = async event => {
+  event.preventDefault();
+  const file = $('file').files[0];
+  if (!file) return;
+  if (file.size > 10 * 1024 * 1024) { $('status').textContent = t('tooBig'); return; }
+  $('submit').disabled = true;
+  const started = Date.now();
+  const progress = () => { $('status').textContent = t('progress', {time: clock(started)}); };
+  progress();
+  const ticker = setInterval(progress, 1000);
+  $('status').classList.add('busy');
+  const form = new FormData(); form.append('file', file); form.append('lang', I18N.lang);
+  try {
+    const response = await fetch('/api/material?stream=true', {method: 'POST', body: form, headers: {'X-Study-Request': '1', 'X-Lang': I18N.lang}});
+    await readProgress(response, material => {
+      saveEditKey(material.id, material.edit_key);
+      window.location.assign(`/materials/${material.id}`);
+    });
+  } catch (error) {
+    $('status').textContent = error.message;
+    $('submit').disabled = false;
+  } finally {
+    clearInterval(ticker); $('status').classList.remove('busy');
+  }
+};
+
+// ---- Material page
+async function openMaterial() {
+  const version = ++generation;
+  const data = await api(`/api/materials/${materialId}?lang=${I18N.lang}`);
+  if (version !== generation) return;
+  render(data);
+  if (data.lang !== I18N.lang) translate();
+  else { translation?.abort(); $('translation').hidden = true; }
+}
+
+async function translate() {
+  const lang = I18N.lang, version = generation;
+  translation?.abort();
+  const controller = translation = new AbortController();
+  const started = Date.now();
+  const show = () => { $('translation-text').textContent = t('translating', {language: t('langTo')[lang], time: clock(started)}); };
+  $('translation').hidden = false; $('translation').classList.add('busy'); $('translation-retry').hidden = true;
+  show();
+  const ticker = setInterval(show, 1000);
+  try {
+    const response = await fetch(`/api/materials/${materialId}/translation?lang=${lang}`, {
+      method: 'POST', signal: controller.signal, headers: {'X-Study-Request': '1', 'X-Lang': lang, 'X-Edit-Key': editKey(materialId)}});
+    await readProgress(response, material => { if (version === generation && lang === I18N.lang) render(material); });
+    $('translation').hidden = true;
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    $('translation-text').textContent = t('translateFailed', {error: error.message});
+    $('translation-retry').hidden = false;
+  } finally {
+    clearInterval(ticker); $('translation').classList.remove('busy');
+    if (translation === controller) translation = null;
+  }
+}
+$('translation-retry').onclick = () => translate();
+
 function render(data) {
   selected = data;
-  $('material-url').value = new URL(`/materials/${data.id}`, window.location.origin).href;
+  document.title = `${data.title} · ${t('brand')}`;
   $('title').textContent = data.title;
-  $('material-author').textContent = `Преподаватель: ${data.teacher_name} · Группа: ${data.group_name}`;
-  $('statistics').hidden = true;
-  $('teacher-actions').hidden = user.role !== 'teacher';
-  $('publish').textContent = data.published ? 'Снять с публикации' : 'Опубликовать для группы';
-  setStatusChip(data.published);
+  // Pictures of the guide are numbered in its text; the server keeps the files.
+  const images = data.images || [];
+  window.StudyMedia = number => (number >= 1 && number <= images.length
+    ? {url: `/api/materials/${data.id}/images/${number}`, ...images[number - 1]} : null);
+  renderActions(data);
   renderSource(data);
-  $('summary').replaceChildren();
-  renderSummary($('summary'), data.summary);
-  renderAsk(data);
-  renderQuiz(data);
+  renderInteractive(data);
+  renderChat(data);
   $('result').hidden = false;
-  typesetMath($('result'));
-  document.querySelector('[data-tab="summary"]').click();
-  $('result').scrollIntoView({behavior: 'smooth'});
+  selectTab(activeTab);
 }
-function setStatusChip(published) {
-  $('material-status').hidden = user.role !== 'teacher';
-  $('material-status').textContent = published ? 'Опубликован для группы' : 'Черновик — студенты не видят';
-  $('material-status').classList.toggle('chip-live', !!published);
+
+function selectTab(name) {
+  activeTab = name;
+  document.querySelectorAll('[data-tab]').forEach(button => {
+    const active = button.dataset.tab === name;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  ['source', 'interactive'].forEach(id => $(id).hidden = id !== name);
+  typesetMath($(name));
+  window.StudyPresentation?.enhance($(name));
 }
+document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => selectTab(button.dataset.tab));
 document.querySelector('[role=tablist]').addEventListener('keydown', event => {
   if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
   const tabs = [...document.querySelectorAll('[data-tab]')];
   const next = tabs[(tabs.indexOf(document.activeElement) + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
   next.click(); next.focus();
 });
+
 function renderSource(data) {
   const root = $('source');
-  root.replaceChildren(node('h3', 'Методичка полностью'));
-  if (!data.source) {
-    root.append(node('p', 'Полный текст этого материала не сохранён: он был загружен до обновления. Загрузите методичку заново, чтобы видеть её целиком.'));
-    return;
-  }
+  root.replaceChildren(node('h3', t('sourceTitle')));
+  if (!data.source) { root.append(node('p', t('sourceMissing'))); return; }
   const pages = Math.max(1, Math.round(data.source.length / 1800));
-  root.append(node('p', `Текст извлечён из файла без изменений; для сканов — результат распознавания. Около ${pages} стр., ${data.source.length.toLocaleString('ru-RU')} символов.`, 'source-note'),
-    node('div', data.source, 'source-text'));
-}
-function questionItem(item) {
-  const article = node('article', null, 'qa-item');
-  const question = node('div', null, 'qa-bubble qa-question');
-  question.append(node('p', user.role === 'teacher' ? `${item.author_name} · ${date(item.created_at)}` : date(item.created_at), 'qa-meta'), node('p', item.question, 'qa-text'));
-  const answer = node('div', null, 'qa-bubble qa-answer');
-  const body = node('div', null, 'qa-body');
-  renderSummary(body, item.answer);
-  answer.append(node('p', 'Ответ по методичке', 'qa-meta'), body);
-  article.append(question, answer);
-  return article;
-}
-function pendingItem(text) {
-  const article = node('article', null, 'qa-item');
-  const question = node('div', null, 'qa-bubble qa-question');
-  question.append(node('p', 'Только что', 'qa-meta'), node('p', text, 'qa-text'));
-  const answer = node('div', null, 'qa-bubble qa-answer qa-pending');
-  answer.setAttribute('aria-label', 'Ищем ответ в методичке');
-  answer.append(node('span'), node('span'), node('span'));
-  article.append(question, answer);
-  return article;
-}
-function renderAsk(data) {
-  const root = $('ask');
-  root.replaceChildren(node('h3', 'Вопрос по методичке'), node('p', user.role === 'teacher'
-    ? 'Здесь студенты задают вопросы по материалу. Ниже — все их вопросы и ответы. Задайте свой вопрос, чтобы проверить, как помощник отвечает.'
-    : 'Спроси, что непонятно. Ответ строится только по тексту этой методички — если в ней ответа нет, помощник честно скажет.', 'ask-intro'));
-  const history = node('div', null, 'qa-history');
-  history.setAttribute('aria-live', 'polite');
-  const empty = node('p', user.role === 'teacher' ? 'Вопросов пока нет.' : 'Здесь появятся твои вопросы и ответы.', 'qa-empty');
-  const form = node('form', null, 'ask-form');
-  const field = node('textarea');
-  field.required = true; field.minLength = 3; field.maxLength = 1000; field.rows = 3;
-  field.placeholder = 'Например: чем вторая нормальная форма отличается от третьей?';
-  field.setAttribute('aria-label', 'Вопрос по методичке');
-  const footer = node('div', null, 'ask-footer');
-  const counter = node('span', '0 / 1000', 'ask-counter');
-  const submit = node('button', 'Спросить');
-  footer.append(node('span', 'Ctrl + Enter — отправить', 'ask-hint'), counter, submit);
-  const status = node('p', null, 'ask-status'); status.setAttribute('role', 'status');
-  form.append(field, footer, status);
-  root.append(history, empty, form);
-  const show = (item, replace) => {
-    const article = questionItem(item);
-    if (replace) replace.replaceWith(article); else history.append(article);
-    empty.hidden = true;
-    typesetMath(article); window.StudyPresentation?.enhance(article);
-    return article;
-  };
-  field.oninput = () => { counter.textContent = `${field.value.length} / 1000`; };
-  field.onkeydown = event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) form.requestSubmit(); };
-  const version = generation;
-  api(`/api/materials/${data.id}/questions`).then(items => {
-    if (version !== generation || selected?.id !== data.id) return;
-    items.forEach(item => show(item));
-  }).catch(error => { status.textContent = error.message; });
-  form.onsubmit = async event => {
-    event.preventDefault();
-    const text = field.value.trim();
-    if (text.length < 3) { status.textContent = 'Вопрос слишком короткий.'; return; }
-    submit.disabled = true; status.textContent = '';
-    const pending = pendingItem(text);
-    history.append(pending); empty.hidden = true;
-    pending.scrollIntoView({behavior: 'smooth', block: 'nearest'});
-    try {
-      const item = await api(`/api/materials/${data.id}/questions`, json('POST', {question: text}));
-      if (version !== generation || selected?.id !== data.id) return;
-      show(item, pending); field.value = ''; field.oninput();
-    } catch (error) {
-      pending.remove(); empty.hidden = history.children.length > 0;
-      status.textContent = error.message;
-    } finally { submit.disabled = false; field.focus(); }
-  };
-}
-function renderQuiz(data) {
-  $('quiz').replaceChildren();
-  if (user.role === 'teacher') {
-    renderQuizEditor(data);
-
+  const chars = data.source.length.toLocaleString(I18N.lang);
+  const translated = data.lang !== data.original_lang;
+  const raw = node('div', data.source, 'source-text');
+  if (!data.formatted) {
+    root.append(node('p', t(translated ? 'sourceTranslated' : 'sourceNote', {pages, chars}), 'source-note'), raw);
     return;
   }
+  // The AI-formatted full text reads like the interactive material; the extracted text stays one click away.
+  const reading = node('div', null, 'reading');
+  renderSummary(reading, data.formatted);
+  raw.hidden = true;
+  const toggle = node('button', t('showRaw'), 'secondary source-toggle'); toggle.type = 'button';
+  toggle.onclick = () => {
+    raw.hidden = !raw.hidden; reading.hidden = !raw.hidden;
+    toggle.textContent = raw.hidden ? t('showRaw') : t('showFormatted');
+  };
+  const tools = node('div', null, 'edit-tools');
+  tools.append(toggle);
+  if (data.editable) tools.append(editButton(t('editGuide'), () => openEditor(root, data, 'formatted', data.formatted)));
+  root.append(node('p', t(translated ? 'sourceTranslated' : 'sourceFormatted', {pages, chars}), 'source-note'), tools);
+  if (data.check) root.append(checkPanel(data));
+  root.append(reading, raw);
+}
+
+// The report of the text check; the author can run the check again.
+function checkPanel(data) {
+  const check = data.check;
+  const panel = node('section', null, 'check-panel' + (check.ai ? ' checked' : ''));
+  panel.setAttribute('aria-live', 'polite');
+  const status = node('p', check.ai
+    ? t('checkDone', {words: check.words.toLocaleString(I18N.lang), fixes: check.fix_count, tables: check.tables, formulas: check.formulas})
+    : t('checkNotDone'), 'check-status');
+  panel.append(status);
+  if (check.fixes?.length) {
+    const details = node('details');
+    const list = node('ul', null, 'fix-list');
+    const show = text => text.replace(/\n/g, ' ↵ ');
+    check.fixes.forEach(fix => {
+      const item = node('li');
+      item.append(node('code', show(fix.original)), node('span', ' → '), node('code', show(fix.fixed)));
+      list.append(item);
+    });
+    details.append(node('summary', `${t('fixesTitle')} (${check.fix_count})`), list);
+    panel.append(details);
+  }
+  if (check.suspicious?.length) {
+    const words = node('p', t('suspiciousTitle') + ' ', 'suspicious');
+    check.suspicious.forEach(word => words.append(node('code', word), ' '));
+    panel.append(words);
+  }
+  if (data.editable) {
+    const run = node('button', check.ai ? t('checkAgain') : t('checkRun'), check.ai ? 'secondary' : '');
+    run.type = 'button';
+    run.onclick = async () => {
+      run.disabled = true;
+      const started = Date.now();
+      const progress = () => { status.textContent = t('checking', {time: clock(started)}); };
+      progress(); panel.classList.add('busy');
+      const ticker = setInterval(progress, 1000);
+      try {
+        const response = await fetch(`/api/materials/${data.id}/check?lang=${data.lang}`, {method: 'POST',
+          headers: {'X-Study-Request': '1', 'X-Lang': I18N.lang, 'X-Edit-Key': editKey(data.id)}});
+        await readProgress(response, material => { render(material); selectTab('source'); });
+      } catch (error) {
+        status.textContent = t('checkFailed', {error: error.message});
+        run.disabled = false;
+      } finally { clearInterval(ticker); panel.classList.remove('busy'); }
+    };
+    panel.append(run);
+  }
+  return panel;
+}
+
+// ---- Editing (author only) and sharing a read-only link
+function editButton(label, action) {
+  const button = node('button', label, 'secondary edit-button'); button.type = 'button';
+  button.onclick = action;
+  return button;
+}
+
+async function saveContent(data, changes) {
+  const updated = await api(`/api/materials/${data.id}/content`, json('PUT', {lang: data.lang, ...changes}));
+  render(updated);
+  notice(t('saved'));
+  return updated;
+}
+
+function openEditor(root, data, field, value) {
+  const editor = node('form', null, 'text-editor');
+  if (data.lang !== data.original_lang) editor.append(node('p', t('editTranslated', {language: t('langTo')[data.lang]}), 'quiz-note'));
+  const area = node('textarea'); area.value = value || ''; area.rows = 18; area.spellcheck = true;
+  area.setAttribute('aria-label', field === 'formatted' ? t('editGuide') : t('editText'));
+  const preview = node('div', null, 'editor-preview');
+  const status = node('p'); status.setAttribute('role', 'status');
+  const save = node('button', t('save'));
+  const cancel = node('button', t('cancel'), 'secondary'); cancel.type = 'button';
+  cancel.onclick = () => render(data);
+  let timer = null;
+  const refresh = () => { renderSummary(preview, area.value); typesetMath(preview); window.StudyPresentation?.enhance(preview); };
+  area.oninput = () => { clearTimeout(timer); timer = setTimeout(refresh, 400); };
+  const buttons = node('div', null, 'edit-tools'); buttons.append(save, cancel);
+  editor.append(node('p', t('editorHint'), 'source-note'), area, buttons, status, node('h4', t('preview')), preview);
+  editor.onsubmit = async event => {
+    event.preventDefault(); save.disabled = true;
+    try { await saveContent(data, {[field]: area.value}); }
+    catch (error) { status.textContent = error.message; save.disabled = false; }
+  };
+  root.replaceChildren(editor);
+  refresh();
+  area.focus();
+}
+
+function renderActions(data) {
+  const root = $('material-actions');
+  root.replaceChildren();
+  if (!data.editable) { root.append(node('span', t('viewOnly'), 'chip')); return; }
+  const rename = editButton(t('editTitle'), () => {
+    const form = node('form', null, 'title-editor');
+    const input = node('input'); input.value = data.title; input.maxLength = 300; input.required = true;
+    input.setAttribute('aria-label', t('titleLabel'));
+    const save = node('button', t('save')); const cancel = editButton(t('cancel'), () => renderActions(data));
+    const status = node('p'); status.setAttribute('role', 'status');
+    form.append(input, save, cancel, status);
+    form.onsubmit = async event => {
+      event.preventDefault(); save.disabled = true;
+      try { await saveContent(data, {title: input.value}); } catch (error) { status.textContent = error.message; save.disabled = false; }
+    };
+    root.replaceChildren(form); input.focus();
+  });
+  const share = node('button', t('share')); share.type = 'button';
+  const panel = node('div', null, 'share-panel'); panel.hidden = true;
+  share.onclick = async () => {
+    share.disabled = true;
+    try {
+      const result = await api(`/api/materials/${data.id}/share`, {method: 'POST'});
+      saveEditKey(data.id, result.edit_key);
+      panel.replaceChildren(
+        copyField(new URL(result.view_url, window.location.origin).href, t('shareNote')),
+        (() => {
+          const more = node('details', null, 'edit-link');
+          more.append(node('summary', t('editLinkTitle')),
+            copyField(new URL(`${result.view_url}#edit=${result.edit_key}`, window.location.origin).href, t('editLinkNote')));
+          return more;
+        })());
+      panel.hidden = false;
+    } catch (error) { notice(error.message); }
+    finally { share.disabled = false; }
+  };
+  const row = node('div', null, 'edit-tools'); row.append(share, rename);
+  root.append(row, panel);
+}
+
+function copyField(value, note) {
+  const wrap = node('div', null, 'copy-field');
+  const input = node('input'); input.readOnly = true; input.value = value;
+  input.setAttribute('aria-label', note);
+  const copy = node('button', t('copy'), 'secondary'); copy.type = 'button';
+  copy.onclick = async () => {
+    input.select();
+    try { await navigator.clipboard.writeText(value); } catch (_) { document.execCommand?.('copy'); }
+    copy.textContent = t('copied');
+    setTimeout(() => { copy.textContent = t('copy'); }, 1500);
+  };
+  const line = node('div', null, 'copy-line'); line.append(input, copy);
+  wrap.append(line, node('p', note, 'source-note'));
+  return wrap;
+}
+
+// Interactive material: contents, collapsible topics with infographics, then the quiz.
+function renderInteractive(data) {
+  const summary = $('summary');
+  summary.replaceChildren();
+  renderSummary(summary, data.summary);
+  const toc = $('toc');
+  toc.replaceChildren();
+  const headings = [...summary.children].filter(child => /^H[12]$/.test(child.tagName));
+  if (headings.length >= 2) {
+    const topics = [];
+    let current = null;
+    for (const child of [...summary.children]) {
+      if (headings.includes(child)) {
+        current = node('details', null, 'topic'); current.open = true;
+        const title = node('summary', null, 'topic-title');
+        title.append(...child.childNodes);
+        current.append(title);
+        current.id = `topic-${topics.length + 1}`;
+        topics.push(current);
+        child.replaceWith(current);
+      } else if (current) current.append(child);
+    }
+    const head = node('div', null, 'toc-head');
+    const toggle = node('button', t('collapseAll'), 'secondary'); toggle.type = 'button';
+    toggle.onclick = () => {
+      const open = !topics.every(topic => topic.open);
+      topics.forEach(topic => { topic.open = open; });
+      toggle.textContent = open ? t('collapseAll') : t('expandAll');
+    };
+    head.append(node('h3', t('toc')), toggle);
+    const list = node('ol');
+    topics.forEach(topic => {
+      const item = node('li');
+      const link = node('button', topic.querySelector('summary').textContent, 'toc-link'); link.type = 'button';
+      link.onclick = () => { topic.open = true; topic.scrollIntoView({behavior: 'smooth', block: 'start'}); };
+      item.append(link); list.append(item);
+    });
+    toc.append(head, list);
+  }
+  toc.hidden = headings.length < 2;
+  placeInfographics(summary, data.infographics || []);
+  if (data.editable) {
+    const tools = node('div', null, 'edit-tools summary-tools');
+    tools.append(editButton(t('editText'), () => openEditor(summary, data, 'summary', data.summary)));
+    summary.prepend(tools);
+  }
+  renderQuiz(data);
+}
+
+const simple = text => String(text || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+// Each infographic goes into the topic it belongs to; every topic can be discussed with the AI below.
+function placeInfographics(summary, items) {
+  const topics = [...summary.querySelectorAll(':scope > details.topic')];
+  const unplaced = [];
+  for (const item of items) {
+    const figure = window.StudyPresentation?.infographic(item);
+    if (!figure) continue;
+    const wanted = simple(item.section);
+    const topic = topics.find(topic => simple(topic.querySelector('summary').textContent) === wanted)
+      || topics.find(topic => wanted && (simple(topic.querySelector('summary').textContent).includes(wanted) || wanted.includes(simple(topic.querySelector('summary').textContent))));
+    if (topic) topic.append(figure); else unplaced.push(figure);
+  }
+  if (unplaced.length) {
+    const extra = node('details', null, 'topic'); extra.open = true;
+    extra.append(node('summary', t('visualTopic'), 'topic-title'), ...unplaced);
+    summary.append(extra);
+  }
+  for (const topic of topics) {
+    const name = topic.querySelector('summary').textContent.trim();
+    const ask = node('button', t('askTopic'), 'secondary ask-topic'); ask.type = 'button';
+    ask.onclick = () => askAbout(name);
+    topic.append(ask);
+  }
+}
+
+function askAbout(topic) {
+  if (!chatField) return;
+  chatField.value = t('askTopicText', {topic});
+  chatField.oninput?.();
+  $('chat').scrollIntoView({behavior: 'smooth', block: 'start'});
+  chatField.focus({preventScroll: true});
+}
+
+function renderQuiz(data) {
+  const root = $('quiz');
+  const head = node('div', null, 'quiz-head');
+  head.append(node('h3', t('quizTitle')));
+  root.replaceChildren(head);
+  const editable = data.editable && data.lang === data.original_lang;
+  if (editable) {
+    const edit = node('button', t('quizEdit'), 'secondary quiz-edit'); edit.type = 'button';
+    edit.onclick = () => renderQuizEditor(data);
+    head.append(edit);
+  } else if (data.editable) {
+    root.append(node('p', t('quizOriginalOnly', {language: t('langTo')[data.original_lang]}), 'quiz-note'));
+  }
+  if (!data.quiz.length) { root.append(node('p', t('quizEmpty'))); return; }
   const form = node('form');
   const answers = Array(data.quiz.length).fill(null);
   const sections = [];
@@ -276,126 +481,25 @@ function renderQuiz(data) {
     sections.push(section);
     form.append(section);
   });
-  const submit = node('button', 'Проверить и сохранить результат');
-  const feedback = node('p');
-  feedback.setAttribute('role', 'status');
+  const submit = node('button', t('quizCheck'));
+  const feedback = node('p'); feedback.setAttribute('role', 'status');
   form.append(submit, feedback);
   form.onsubmit = async event => {
     event.preventDefault();
     submit.disabled = true;
     try {
       const result = await api(`/api/materials/${data.id}/attempts`, json('POST', {answers, quiz_revision: data.quiz_revision}));
-      feedback.textContent = `Результат: ${result.score} из ${result.total}. Сохранён для преподавателя.`;
-      result.feedback.forEach((item, index) => {
+      feedback.textContent = t('quizResult', {score: result.score, total: result.total});
+      data.quiz.forEach((question, index) => {
         sections[index].disabled = true;
-        sections[index].append(richNode('p', `Правильный ответ: ${data.quiz[index].options[item.answer]}\n${item.explanation}`, 'feedback'));
+        sections[index].classList.add(answers[index] === question.answer ? 'right' : 'wrong');
+        sections[index].append(richNode('p', `${t('quizCorrect', {answer: question.options[question.answer]})}\n${question.explanation}`, 'feedback'));
       });
-      typesetMath($('quiz'));
+      typesetMath(root);
     } catch (error) { feedback.textContent = error.message; submit.disabled = false; }
   };
-  $('quiz').append(form);
+  root.append(form);
 }
-$('publish').onclick = async () => {
-  if (!selected) return;
-  try {
-    const result = await api(`/api/materials/${selected.id}`, json('PATCH', {published: !selected.published}));
-    selected.published = result.published;
-    $('publish').textContent = result.published ? 'Снять с публикации' : 'Опубликовать для группы';
-    setStatusChip(result.published);
-    notice(result.published ? 'Материал опубликован для вашей группы.' : 'Материал скрыт от студентов.');
-  } catch (error) { notice(error.message); }
-};
-$('show-stats').onclick = async () => {
-  if (!selected) return;
-  const version = generation;
-  const id = selected.id;
-  try {
-    const rows = await api(`/api/materials/${id}/stats`);
-    if (version !== generation || selected?.id !== id) return;
-    $('statistics').replaceChildren(node('h3', 'Активность студентов'), node('p', 'Просмотр означает открытие материала, а не подтверждённое прочтение.'));
-    if (!rows.length) $('statistics').append(node('p', 'В группе пока нет студентов.'));
-    else {
-      const table = node('table');
-      const head = node('tr');
-      ['Студент', 'Первый просмотр', 'Последний просмотр', 'Открытий', 'Попыток', 'Последний результат'].forEach(title => head.append(node('th', title)));
-      const thead = node('thead'); thead.append(head); table.append(thead);
-      const tbody = node('tbody');
-      rows.forEach(row => {
-        const tr = node('tr');
-        [row.name + ' (' + row.username + ')', date(row.first_view), date(row.last_view), row.views, row.attempts, row.last_score === null ? '—' : `${row.last_score}/${row.total} (версия ${row.last_quiz_revision}${row.last_quiz_revision !== row.current_quiz_revision ? ', прежний тест' : ''})`].forEach(value => tr.append(node('td', String(value))));
-        tbody.append(tr);
-      });
-      table.append(tbody); $('statistics').append(table);
-    }
-    $('statistics').hidden = false;
-  } catch (error) { notice(error.message); }
-};
-async function streamMaterial(form, onEvent, signal) {
-  const response = await fetch('/api/material?stream=true', {method: 'POST', body: form, signal, headers: {'X-Study-Request': '1'}});
-  if (!response.ok) throw new Error(errorMessage(response, await readJson(response), 'Не удалось обработать материал.'));
-  const reader = response.body.getReader(), decoder = new TextDecoder();
-  let pending = '', complete = false;
-  const accept = line => {
-    if (!line.trim()) return;
-    const event = JSON.parse(line);
-    if (event.type === 'error') throw new Error(event.detail);
-    if (event.type === 'complete') complete = true;
-    onEvent(event);
-  };
-  try {
-    while (true) {
-      const {value, done} = await reader.read();
-      pending += decoder.decode(value, {stream: !done});
-      let boundary;
-      while ((boundary = pending.indexOf('\n')) !== -1) { accept(pending.slice(0, boundary)); pending = pending.slice(boundary + 1); }
-      if (done) break;
-    }
-    if (pending.trim()) accept(pending);
-    if (!complete) throw new Error('Соединение прервалось до сохранения материала. Повторите загрузку.');
-  } finally { reader.releaseLock(); }
-}
-$('upload').onsubmit = async event => {
-  event.preventDefault();
-  const file = $('file').files[0];
-  if (!file) return;
-  if (file.size > 10 * 1024 * 1024) { $('status').textContent = 'Файл больше 10 МБ. Выбери отдельную главу.'; return; }
-  if (!$('target-group').value) { $('status').textContent = 'Администратор должен назначить вам группу.'; return; }
-  const version = generation;
-  $('submit').disabled = true;
-  const started = Date.now();
-  const progress = () => {
-    const seconds = Math.round((Date.now() - started) / 1000);
-    $('status').textContent = `Читаем методичку и выделяем суть… ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}. Большие тексты обрабатываются по частям, сканы распознаются до пяти минут.`;
-  };
-  progress();
-  const ticker = setInterval(() => { if (version === generation) progress(); }, 1000);
-  $('status').classList.add('busy');
-  const form = new FormData(); form.append('file', file); form.append('group_id', $('target-group').value);
-  try {
-    uploadController = new AbortController();
-    await streamMaterial(form, event => {
-      if (version !== generation) return;
-      if (event.type === 'complete') {
-        window.location.assign(`/materials/${event.material.id}`);
-      }
-    }, uploadController.signal);
-  } catch (error) {
-    if (version === generation && error.name !== 'AbortError') $('status').textContent = error.message;
-  } finally {
-    clearInterval(ticker); $('status').classList.remove('busy');
-    if (version === generation) { $('submit').disabled = false; uploadController = null; }
-  }
-};
-(async () => {
-  try {
-    setUser(await api('/api/auth/me'));
-    if (materialId) await openCurrentMaterial();
-    else if (user.role === 'admin') await loadAdmin();
-    else await refreshLibrary();
-  }
-  catch (error) { if (user) notice(error.message); }
-})();
-
 
 function labeledField(parent, caption, element) {
   const label = node('label', caption);
@@ -404,122 +508,152 @@ function labeledField(parent, caption, element) {
 }
 
 function renderQuizEditor(data) {
-  $('quiz').append(node('p', 'Редактируй вопросы, варианты и правильные ответы. Сохранение изменений снимает материал с публикации. Старые результаты сохранятся с номером версии теста.'));
+  const root = $('quiz');
+  root.replaceChildren(node('h3', t('quizTitle')), node('p', t('editorIntro')));
   const form = node('form', null, 'quiz-editor');
   const container = node('div');
   const rows = new Map();
   function addQuestion(question) {
-    if (rows.size >= 50) { notice('Максимум 50 вопросов.'); return; }
+    if (rows.size >= 50) { notice(t('max50')); return; }
     const section = node('fieldset', null, 'editor-question');
     const text = node('textarea'); text.value = question.question; text.required = true; text.maxLength = 2000;
-    labeledField(section, 'Вопрос', text);
+    labeledField(section, t('question'), text);
     const options = question.options.map((value, index) => {
       const input = node('input'); input.value = value; input.required = true; input.maxLength = 2000;
-      return labeledField(section, `Вариант ${index + 1}`, input);
+      return labeledField(section, t('option', {n: index + 1}), input);
     });
     const answer = node('select');
-    options.forEach((_, index) => { const option = node('option', `Вариант ${index + 1}`); option.value = index; answer.append(option); });
+    options.forEach((_, index) => { const option = node('option', t('option', {n: index + 1})); option.value = index; answer.append(option); });
     answer.value = question.answer;
-    labeledField(section, 'Правильный ответ', answer);
+    labeledField(section, t('correct'), answer);
     const explanation = node('textarea'); explanation.value = question.explanation; explanation.required = true; explanation.maxLength = 3000;
-    labeledField(section, 'Объяснение ответа', explanation);
-    const remove = node('button', 'Удалить вопрос'); remove.type = 'button';
+    labeledField(section, t('explanation'), explanation);
+    const remove = node('button', t('removeQuestion'), 'secondary'); remove.type = 'button';
     remove.onclick = () => { rows.delete(section); section.remove(); };
     section.append(remove);
     rows.set(section, {text, options, answer, explanation}); container.append(section);
   }
   data.quiz.forEach(addQuestion);
-  const add = node('button', 'Добавить вопрос'); add.type = 'button';
+  const add = node('button', t('addQuestion'), 'secondary'); add.type = 'button';
   add.onclick = () => addQuestion({question: '', options: ['', '', '', ''], answer: 0, explanation: ''});
-  const save = node('button', 'Сохранить тест');
+  const save = node('button', t('saveQuiz'));
+  const cancel = node('button', t('cancel'), 'secondary'); cancel.type = 'button';
+  cancel.onclick = () => renderQuiz(data);
   const status = node('p'); status.setAttribute('role', 'status');
-  form.append(container, add, save, status);
+  form.append(container, add, save, cancel, status);
   form.onsubmit = async event => {
     event.preventDefault(); save.disabled = true;
     const quiz = [...rows.values()].map(row => ({question: row.text.value.trim(), options: row.options.map(input => input.value.trim()), answer: Number(row.answer.value), explanation: row.explanation.value.trim()}));
     try {
       const updated = await api(`/api/materials/${data.id}/quiz`, json('PUT', {quiz, quiz_revision: data.quiz_revision}));
-      render(updated); document.querySelector('[data-tab="quiz"]').click();
-      notice('Тест сохранён. После проверки опубликуйте материал для студентов.');
+      render(updated);
+      $('quiz').scrollIntoView({behavior: 'smooth', block: 'start'});
+      notice(t('quizSaved'));
     } catch (error) { status.textContent = error.message; save.disabled = false; }
   };
-  $('quiz').append(form);
+  root.append(form);
 }
 
-async function loadAdmin() {
-  const version = generation;
-  const [groups, teachers] = await Promise.all([api('/api/admin/groups'), api('/api/admin/teachers')]);
-  if (version !== generation) return;
-  $('admin-group').replaceChildren(); $('admin-teacher').replaceChildren(); $('admin-groups').replaceChildren();
-  groups.forEach(group => { const option = node('option', `${group.name} (#${group.id})`); option.value = group.id; $('admin-group').append(option); });
-  teachers.forEach(teacher => { const option = node('option', `${teacher.name} (${teacher.username})`); option.value = teacher.id; $('admin-teacher').append(option); });
-  for (const group of groups) {
-    const section = node('section', null, 'admin-group');
-    section.append(node('h3', `${group.name} (#${group.id})`), node('p', `Код регистрации студентов: ${group.invite_code}`));
-    if (!group.teacher_ids.length) section.append(node('p', 'Преподаватели не назначены.'));
-    group.teacher_ids.forEach(id => {
-      const teacher = teachers.find(item => item.id === id);
-      const row = node('div', null, 'assignment-row');
-      row.append(node('span', teacher ? `${teacher.name} (${teacher.username})` : `Преподаватель #${id}`));
-      const remove = node('button', 'Убрать из группы');
-      remove.onclick = async () => {
-        remove.disabled = true;
-        try { await api(`/api/admin/groups/${group.id}/teachers/${id}`, {method: 'DELETE'}); await loadAdmin(); notice('Назначение удалено.'); }
-        catch (error) { notice(error.message); remove.disabled = false; }
-      };
-      row.append(remove); section.append(row);
-    });
-    $('admin-groups').append(section);
-  }
+// ---- Chat with the AI about this guide
+function questionItem(item) {
+  const article = node('article', null, 'qa-item');
+  const question = node('div', null, 'qa-bubble qa-question');
+  question.append(node('p', date(item.created_at), 'qa-meta'), node('p', item.question, 'qa-text'));
+  const answer = node('div', null, 'qa-bubble qa-answer');
+  const body = node('div', null, 'qa-body');
+  renderSummary(body, item.answer);
+  answer.append(node('p', t('answerLabel'), 'qa-meta'), body);
+  article.append(question, answer);
+  return article;
 }
-for (const [formId, endpoint] of [['create-group', 'groups'], ['create-teacher', 'teachers']]) {
-  $(formId).onsubmit = async event => {
-    event.preventDefault(); const button = event.target.querySelector('button'); button.disabled = true;
+function pendingItem(text) {
+  const article = node('article', null, 'qa-item');
+  const question = node('div', null, 'qa-bubble qa-question');
+  question.append(node('p', t('justNow'), 'qa-meta'), node('p', text, 'qa-text'));
+  const answer = node('div', null, 'qa-bubble qa-answer qa-pending');
+  answer.setAttribute('aria-label', t('searching'));
+  answer.append(node('span'), node('span'), node('span'));
+  article.append(question, answer);
+  return article;
+}
+function renderChat(data) {
+  const root = $('chat');
+  root.replaceChildren(node('h3', t('chatTitle')), node('p', t('chatIntro'), 'ask-intro'));
+  const history = node('div', null, 'qa-history');
+  history.setAttribute('aria-live', 'polite');
+  const empty = node('p', t('chatEmpty'), 'qa-empty');
+  const form = node('form', null, 'ask-form');
+  const field = chatField = node('textarea');
+  field.required = true; field.minLength = 3; field.maxLength = 1000; field.rows = 3;
+  field.placeholder = t('chatPlaceholder');
+  field.setAttribute('aria-label', t('chatLabel'));
+  const footer = node('div', null, 'ask-footer');
+  const counter = node('span', '0 / 1000', 'ask-counter');
+  const submit = node('button', t('send'));
+  footer.append(node('span', t('chatHint'), 'ask-hint'), counter, submit);
+  const status = node('p', null, 'ask-status'); status.setAttribute('role', 'status');
+  form.append(field, footer, status);
+  root.append(history, empty, form);
+  const show = (item, replace) => {
+    const article = questionItem(item);
+    if (replace) replace.replaceWith(article); else history.append(article);
+    empty.hidden = true;
+    typesetMath(article); window.StudyPresentation?.enhance(article);
+    return article;
+  };
+  field.oninput = () => { counter.textContent = `${field.value.length} / 1000`; };
+  field.onkeydown = event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) form.requestSubmit(); };
+  const version = generation;
+  api(`/api/materials/${data.id}/questions`).then(items => {
+    if (version !== generation || selected !== data) return;
+    items.forEach(item => show(item));
+  }).catch(error => { status.textContent = error.message; });
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const text = field.value.trim();
+    if (text.length < 3) { status.textContent = t('tooShort'); return; }
+    submit.disabled = true; status.textContent = '';
+    const pending = pendingItem(text);
+    history.append(pending); empty.hidden = true;
+    pending.scrollIntoView({behavior: 'smooth', block: 'nearest'});
     try {
-      await api(`/api/admin/${endpoint}`, json('POST', Object.fromEntries(new FormData(event.target))));
-      event.target.reset(); await loadAdmin(); notice('Создано. Теперь можно назначить преподавателя в группу.');
-    } catch (error) { notice(error.message); }
-    finally { button.disabled = false; }
+      const item = await api(`/api/materials/${data.id}/questions`, json('POST', {question: text, lang: I18N.lang}));
+      if (!pending.isConnected) return;
+      show(item, pending); field.value = ''; field.oninput();
+    } catch (error) {
+      pending.remove(); empty.hidden = history.children.length > 0;
+      status.textContent = error.message;
+    } finally { submit.disabled = false; field.focus(); }
   };
 }
-$('assign-teacher').onsubmit = async event => {
-  event.preventDefault();
-  try {
-    await api(`/api/admin/groups/${$('admin-group').value}/teachers/${$('admin-teacher').value}`, {method: 'PUT'});
-    await loadAdmin(); notice('Преподаватель назначен в группу.');
-  } catch (error) { notice(error.message); }
-};
 
+// ---- Language switch: interface texts change at once; a material is shown in the new language.
+document.querySelectorAll('[data-lang]').forEach(button => button.onclick = async () => {
+  if (button.dataset.lang === I18N.lang) return;
+  I18N.set(button.dataset.lang);
+  notice('');
+  // apply() resets the file hint; keep the chosen file's name visible.
+  if ($('file').files[0]) $('filename').textContent = $('file').files[0].name;
+  if (materialId) {
+    try { await openMaterial(); } catch (error) { notice(error.message); }
+  }
+});
 
 function renderSummary(container, text) {
   if (window.StudyPresentation) { window.StudyPresentation.renderSummary(container, text); return; }
-  let paragraph = [];
-  const flush = () => {
-    if (paragraph.length) container.append(node('p', paragraph.join('\n'), 'summary-text'));
-    paragraph = [];
-  };
-  for (const line of text.split('\n')) {
-    const heading = line.match(/^#{1,3}\s+(.+)$/);
-    if (heading) { flush(); container.append(node('h3', heading[1])); }
-    else if (!line.trim()) flush();
-    else paragraph.push(line);
-  }
-  flush();
+  container.textContent = text;
 }
-
-
-function typesetMath(root) {
-  window.StudyPresentation?.math(root);
-}
-
-
-function formatInline(container, text) {
-  if (window.StudyPresentation) window.StudyPresentation.inline(container, text);
-  else container.textContent = text;
-}
-
+function typesetMath(root) { window.StudyPresentation?.math(root); }
 function richNode(tag, text, className) {
   const result = node(tag, undefined, className);
-  formatInline(result, text);
+  if (window.StudyPresentation) window.StudyPresentation.inline(result, text);
+  else result.textContent = text;
   return result;
 }
+
+(async () => {
+  I18N.apply();
+  setupPage();
+  if (!materialId) return;
+  try { await openMaterial(); } catch (error) { notice(error.message); }
+})();

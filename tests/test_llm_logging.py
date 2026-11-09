@@ -28,7 +28,7 @@ def test_provider_error_logs_reason_and_request_id_without_credentials(monkeypat
     assert f'HTTP {status}' in caplog.text
     assert 'Invalid model parameters' in caplog.text
     assert 'request-123' in caplog.text
-    assert 'суть методички и тест' in caplog.text
+    assert 'интерактивный материал и тест' in caplog.text
     assert 'test-key' not in caplog.text
     assert 'PRIVATE_DOCUMENT_CONTENT' not in caplog.text
     assert 'Authorization' not in caplog.text
@@ -93,5 +93,5 @@ def test_progress_identifies_document_section_and_final_stage(monkeypatch, caplo
         asyncio.run(main.generate('PRIVATE_SOURCE_CONTENT ' * 2000))
     assert 'фрагмент 1/3' in caplog.text
     assert 'фрагмент 3/3' in caplog.text
-    assert 'суть методички и тест' in caplog.text
+    assert 'интерактивный материал и тест' in caplog.text
     assert 'PRIVATE_SOURCE_CONTENT' not in caplog.text

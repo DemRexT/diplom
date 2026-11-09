@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app import llm, main
 from app.store import Material
-from test_accounts import accounts, login
+from test_workflow import app_client
 from test_app import RESULT
 
 
@@ -96,8 +96,7 @@ def test_extraction_no_longer_rejects_45000_characters():
 
 @pytest.mark.parametrize('kind,expected', [('rate_limit', 503), ('timeout', 504), ('truncated', 502), ('empty', 502), ('invalid_json', 502)])
 def test_intermediate_errors_do_not_save_material(database, monkeypatch, kind, expected):
-    accounts(database)
-    teacher = login('teacher')
+    client = app_client()
     calls = []
     def handler(request):
         body = json.loads(request.content)
@@ -115,7 +114,7 @@ def test_intermediate_errors_do_not_save_material(database, monkeypatch, kind, e
             return reply('   ')
         return httpx.Response(200, content=b'not json')
     mock_yandex(monkeypatch, handler)
-    response = teacher.post('/api/material', data={'group_id': '1'}, files={'file': ('large.txt', ('Содержание главы. ' * 5000).encode())})
+    response = client.post('/api/material', files={'file': ('large.txt', ('Содержание главы. ' * 5000).encode())})
     assert response.status_code == expected
     assert len(calls) == 2  # No retry or final request after failure.
     with database() as session:

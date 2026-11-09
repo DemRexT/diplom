@@ -137,3 +137,22 @@ def test_invalid_oauth_body_is_not_logged_or_used(monkeypatch, caplog):
     setup_giga(monkeypatch, handler)
     with pytest.raises(HTTPException): asyncio.run(main.generate(TEXT))
     assert len(calls) == 1 and 'PRIVATE_BODY' not in caplog.text
+
+
+def test_unknown_model_lists_available_models(monkeypatch, caplog):
+    def handler(request):
+        if request.url.path.endswith('/oauth'):
+            return token_reply()
+        if request.url.path.endswith('/models'):
+            return httpx.Response(200, json={'data': [{'id': 'GigaChat-2-Pro'}, {'id': 'GigaChat-2'}], 'object': 'list'})
+        return httpx.Response(404, json={'message': 'No such model'})
+    setup_giga(monkeypatch, handler)
+    monkeypatch.setenv('GIGACHAT_MODEL', 'GigaChat-Pro')
+    with caplog.at_level(logging.INFO, logger='uvicorn.error'), pytest.raises(HTTPException) as error:
+        asyncio.run(main.generate(TEXT))
+    assert error.value.status_code == 503
+    assert '«GigaChat-Pro»' in error.value.detail and 'GigaChat-2, GigaChat-2-Pro' in error.value.detail
+    assert 'Доступные модели: GigaChat-2, GigaChat-2-Pro' in caplog.text and 'private-token' not in caplog.text
+    from app.i18n import localize
+    assert localize(error.value.detail, 'en') == ('GigaChat model "GigaChat-Pro" is not available. '
+                                                  'Set GIGACHAT_MODEL to one of the available models: GigaChat-2, GigaChat-2-Pro.')

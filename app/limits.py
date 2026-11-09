@@ -1,4 +1,4 @@
-"""In-process limits for password guessing and paid model requests.
+"""In-process limits for paid model requests.
 
 State lives in one server process. Behind several workers or a reverse proxy, add limits
 on the proxy too; there every client may share the proxy's address.
@@ -12,50 +12,6 @@ from fastapi import HTTPException
 
 def minutes(seconds):
     return max(1, math.ceil(seconds / 60))
-
-
-class FailureLimiter:
-    """Refuse attempts for a key after too many failures within the window."""
-
-    def __init__(self, limit, window):
-        self.limit, self.window = limit, window
-        self.lock = threading.Lock()
-        self.failures: dict[tuple, deque] = {}
-
-    def _recent(self, key, now):
-        history = self.failures.get(key)
-        while history and history[0] <= now - self.window:
-            history.popleft()
-        if history is not None and not history:
-            del self.failures[key]
-            return None
-        return history
-
-    def check(self, *keys):
-        now = time.monotonic()
-        with self.lock:
-            for key in keys:
-                history = self._recent(key, now)
-                if history and len(history) >= self.limit:
-                    wait = history[0] + self.window - now
-                    raise HTTPException(429, f'Слишком много неудачных попыток входа. Повторите через {minutes(wait)} мин.',
-                                        headers={'Retry-After': str(math.ceil(wait))})
-
-    def failed(self, *keys):
-        now = time.monotonic()
-        with self.lock:
-            for key in keys:
-                self._recent(key, now)
-                self.failures.setdefault(key, deque()).append(now)
-
-    def reset(self, *keys):
-        with self.lock:
-            for key in keys:
-                self.failures.pop(key, None)
-
-    def clear(self):
-        with self.lock:
-            self.failures.clear()
 
 
 class RequestLimiter:
@@ -102,9 +58,6 @@ class RequestLimiter:
             self.started.clear()
 
 
-login_by_account = FailureLimiter(limit=10, window=900)
-login_by_address = FailureLimiter(limit=50, window=900)
-invites_by_address = FailureLimiter(limit=20, window=900)
 generations = RequestLimiter(
     per_window=20, window=3600, concurrent=3,
     busy='Предыдущая методичка ещё обрабатывается. Дождитесь завершения.',
@@ -115,8 +68,18 @@ questions = RequestLimiter(
     busy='Дождитесь ответа на предыдущий вопрос.',
     overloaded='Сейчас много вопросов. Попробуйте через минуту.',
     exhausted='Слишком много вопросов подряд. Повторите через {minutes} мин.')
+translations = RequestLimiter(
+    per_window=20, window=3600, concurrent=2,
+    busy='Перевод этого материала уже выполняется. Дождитесь завершения.',
+    overloaded='Сервер сейчас обрабатывает другие методички. Попробуйте через минуту.',
+    exhausted='Достигнут лимит переводов: 20 в час. Повторите через {minutes} мин.')
+checks = RequestLimiter(
+    per_window=20, window=3600, concurrent=2,
+    busy='Проверка этого материала уже выполняется. Дождитесь завершения.',
+    overloaded='Сервер сейчас обрабатывает другие методички. Попробуйте через минуту.',
+    exhausted='Достигнут лимит проверок: 20 в час. Повторите через {minutes} мин.')
 
 
 def reset_all():
-    for limiter in (login_by_account, login_by_address, invites_by_address, generations, questions):
+    for limiter in (generations, questions, translations, checks):
         limiter.clear()

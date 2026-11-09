@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app import main
 from app.store import Material
-from test_accounts import accounts, login
+from test_workflow import app_client
 from test_app import RESULT
 from test_generation import mock_yandex, reply
 
@@ -60,8 +60,7 @@ def test_repair_keeps_essence_and_does_not_repeat_notes(monkeypatch):
 
 
 def test_invalid_quiz_is_repaired_before_saving(database, monkeypatch):
-    accounts(database)
-    teacher = login('teacher')
+    client = app_client()
     bad = copy.deepcopy(RESULT)
     bad['quiz'][0]['options'] = ['Один вариант']
     bad['quiz'][0]['answer'] = 8
@@ -75,7 +74,7 @@ def test_invalid_quiz_is_repaired_before_saving(database, monkeypatch):
             assert ['quiz', 0, 'options'] in paths and ['quiz', 0, 'answer'] in paths
         return reply(json.dumps(bad if len(calls) == 1 else RESULT))
     mock_yandex(monkeypatch, handler)
-    response = teacher.post('/api/material', data={'group_id': '1'}, files={'file': ('lecture.txt', ('Учебный текст. ' * 100).encode())})
+    response = client.post('/api/material', files={'file': ('lecture.txt', ('Учебный текст. ' * 100).encode())})
     assert response.status_code == 200
     assert len(response.json()['quiz'][0]['options']) == 4
     with database() as session:
@@ -86,15 +85,14 @@ def test_invalid_quiz_is_repaired_before_saving(database, monkeypatch):
 
 @pytest.mark.parametrize('second', ['invalid', {'summary': 'Still missing fields'}, []])
 def test_failed_repair_stops_and_saves_nothing(database, monkeypatch, second, caplog):
-    accounts(database)
-    teacher = login('teacher')
+    client = app_client()
     calls = []
     def handler(request):
         calls.append(request)
         candidate = {'summary': 'Ready summary'} if len(calls) == 1 else second
         return reply(candidate if isinstance(candidate, str) else json.dumps(candidate))
     mock_yandex(monkeypatch, handler)
-    response = teacher.post('/api/material', data={'group_id': '1'}, files={'file': ('lecture.txt', ('Учебный текст. ' * 100).encode())})
+    response = client.post('/api/material', files={'file': ('lecture.txt', ('Учебный текст. ' * 100).encode())})
     assert response.status_code == 502 and len(calls) == 2
     assert 'не смогла исправить' in response.json()['detail']
     assert 'дополнительных попыток не будет' in caplog.text

@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.main import app
-from test_accounts import HEADERS, PASSWORD, accounts, login, student
+from test_workflow import app_client
 from test_app import RESULT
 from test_generation import mock_yandex, reply
 from test_questions import published_material
@@ -56,40 +56,26 @@ def test_docx_keeps_tables_in_document_order():
     assert text.index('Вступление') < text.index('1НФ | Атомарные значения') < text.index('Текст после таблицы')
 
 
-def test_repeated_wrong_passwords_are_throttled(database):
-    accounts(database)
-    client = TestClient(app, headers=HEADERS)
-    for _ in range(10):
-        assert client.post('/api/auth/login', json={'username': 'teacher', 'password': 'wrong-password'}).status_code == 401
-    blocked = client.post('/api/auth/login', json={'username': 'teacher', 'password': PASSWORD})
-    assert blocked.status_code == 429 and 'Retry-After' in blocked.headers
-    assert login('otherteacher')  # Other accounts are unaffected.
-
-
-def test_questions_are_limited_per_student(database, monkeypatch):
-    teacher, material_id = published_material(database, monkeypatch)
+def test_questions_are_rate_limited(database, monkeypatch):
+    client, material_id = published_material(database, monkeypatch)
     mock_yandex(monkeypatch, lambda request: reply('Ответ.'))
-    learner = student()
-    codes = [learner.post(f'/api/materials/{material_id}/questions', json={'question': f'Вопрос {index}?'}).status_code
+    codes = [client.post(f'/api/materials/{material_id}/questions', json={'question': f'Вопрос {index}?'}).status_code
              for index in range(31)]
     assert codes[:30] == [200] * 30 and codes[30] == 429
-    assert teacher.post(f'/api/materials/{material_id}/questions', json={'question': 'Проверка?'}).status_code == 200
 
 
 def test_failed_upload_releases_generation_slot(database):
-    accounts(database)
-    teacher = login('teacher')
+    client = app_client()
     for _ in range(3):
-        assert teacher.post('/api/material', data={'group_id': '1'}, files={'file': ('a.txt', b'tiny')}).status_code == 422
+        assert client.post('/api/material', files={'file': ('a.txt', b'tiny')}).status_code == 422
 
 
 def test_stream_saves_with_its_own_session(database, monkeypatch):
-    accounts(database)
     mock_yandex(monkeypatch, lambda request: reply(json.dumps(RESULT)))
-    teacher = login('teacher')
-    response = teacher.post('/api/material?stream=true', data={'group_id': '1'}, files={'file': ('a.txt', ('Учебный текст. ' * 20).encode())})
+    client = app_client()
+    response = client.post('/api/material?stream=true', files={'file': ('a.txt', ('Учебный текст. ' * 20).encode())})
     events = [json.loads(line) for line in response.text.splitlines()]
     assert events[-1]['type'] == 'complete'
     # The slot is free again once the stream ends.
-    second = teacher.post('/api/material?stream=true', data={'group_id': '1'}, files={'file': ('a.txt', ('Учебный текст. ' * 20).encode())})
+    second = client.post('/api/material?stream=true', files={'file': ('a.txt', ('Учебный текст. ' * 20).encode())})
     assert json.loads(second.text.splitlines()[-1])['type'] == 'complete'
